@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- キオスク(miharashi)の API は LAN 内の平文 http。接続先は設定で決めた 1 つだけ。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
