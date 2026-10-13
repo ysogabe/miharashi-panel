@@ -48,6 +48,26 @@ class KioskClientTest {
     }
 
     @Test
+    fun displayPostsMode() {
+        server.enqueue(MockResponse().setResponseCode(204))
+        client.display("force_off")
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertEquals("/api/v1/display", req.path)
+        assertEquals("""{"mode":"force_off"}""", req.body.readUtf8())
+        assertEquals("Bearer $TOKEN", req.getHeader("Authorization"))
+
+        server.enqueue(MockResponse().setResponseCode(502).setBody("""{"error":"Home Assistant を切り替えられない: timeout"}"""))
+        try {
+            client.display("auto")
+            fail("502 は例外")
+        } catch (e: KioskHttpException) {
+            assertEquals(502, e.code)
+            assertTrue(e.message!!, e.message!!.contains("Home Assistant"))
+        }
+    }
+
+    @Test
     fun errorsCarryTheKioskMessage() {
         server.enqueue(
             MockResponse().setResponseCode(400)

@@ -42,6 +42,19 @@ class PanelStateTest {
     }
 
     @Test
+    fun parsesMonitorState() {
+        val d = KioskStatus.parse(fixture("status-display.json")).display
+        assertEquals(DisplayInfo(on = true, mode = "force_on", control = true), d)
+        val off = fixture("status-display.json")
+            .replace("\"mode\":\"force_on\",\"on\":true", "\"mode\":\"force_off\",\"on\":false")
+        assertEquals(DisplayInfo(on = false, mode = "force_off", control = true), KioskStatus.parse(off).display)
+        assertNull("display を返さない古いキオスク", KioskStatus.parse(fixture("status-photo.json")).display)
+        val noHa = fixture("status-photo.json")
+            .replace("\"feed\"", "\"display\":{\"on\":true,\"mode\":null,\"control\":false},\"feed\"")
+        assertEquals(DisplayInfo(on = true, mode = null, control = false), KioskStatus.parse(noHa).display)
+    }
+
+    @Test
     fun outOfRangeIndexIsUnknown() {
         val json = fixture("status-photo.json").replace("\"index\":1", "\"index\":7")
         assertNull(KioskStatus.parse(json).current)

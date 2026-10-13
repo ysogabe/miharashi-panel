@@ -87,14 +87,18 @@ class KioskSync(
     }
 
     /**
-     * キーを送る。結果(成功なら null、失敗なら理由)を UI スレッドで返す。失敗しても再送しない(二重送信を避ける)。
-     * 成功したら、SSE を待たずに `/status` を読み直して表示を早く追従させる。
+     * キー(`/input`)かモニターの切り替え(`/display`)を送る。結果(成功なら null、失敗なら理由)を UI スレッドで返す。
+     * 失敗しても再送しない(二重送信を避ける)。成功したら、SSE を待たずに `/status` を読み直して表示を早く追従させる。
      */
-    fun send(key: String, done: (String?) -> Unit) {
+    fun send(action: Action, done: (String?) -> Unit) {
         if (!running) return done("停止中")
         sender.execute {
             val err = try {
-                client.input(key)
+                when (action) {
+                    is Action.Key -> client.input(action.name)
+                    is Action.Display -> client.display(action.mode)
+                    Action.Settings -> Unit
+                }
                 null
             } catch (e: Exception) {
                 describe(e)

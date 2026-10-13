@@ -12,7 +12,7 @@ class PanelLayoutTest {
     @Test
     fun mainKeysSendPrevSelectNext() {
         assertEquals(listOf("4", "5", "6"), l.mainKeys.map { it.digit })
-        assertEquals(listOf("prev", "select", "next"), l.mainKeys.map { it.key })
+        assertEquals(listOf("prev", "select", "next").map(Action::Key), l.mainKeys.map { it.action })
         assertTrue(l.mainKeys.all { it.enabled })
     }
 
@@ -20,6 +20,15 @@ class PanelLayoutTest {
     fun sideKeysAreGreyUntilPoc003() {
         assertEquals(listOf("8", "2", "0"), l.sideKeys.map { it.digit })
         assertTrue(l.sideKeys.none { it.enabled })
+    }
+
+    @Test
+    fun monitorKeysSwitchTheKioskDisplay() {
+        assertEquals(listOf("消灯", "点灯", "自動"), l.displayKeys.map { it.label })
+        assertEquals(listOf("force_off", "force_on", "auto").map(Action::Display), l.displayKeys.map { it.action })
+        // 4 / 5 / 6 より上、状態の文字(左)とは重ならない
+        assertTrue(l.displayKeys.all { it.box.bottom < l.mainKeys[0].box.top && it.box.left > l.monitorRow.left + 150 })
+        assertTrue(l.displayKeys.all { it.box.height >= 56 })
     }
 
     @Test
