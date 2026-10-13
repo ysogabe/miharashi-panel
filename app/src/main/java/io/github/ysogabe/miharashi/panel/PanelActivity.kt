@@ -44,7 +44,7 @@ class PanelActivity : Activity() {
         getSystemService(KeyguardManager::class.java)?.requestDismissKeyguard(this, null)
         view = PanelView(
             this,
-            onKey = { key, done -> sync?.send(key, done) ?: done("未接続") },
+            onAction = { action, done -> sync?.send(action, done) ?: done("未接続") },
             onSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
         setContentView(view)

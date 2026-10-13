@@ -50,13 +50,19 @@ class KioskClient(
     }
 
     /** `POST /api/v1/input`。204 で戻る。それ以外は KioskHttpException。 */
-    fun input(key: String) {
-        val c = open("/api/v1/input")
+    fun input(key: String) = post("/api/v1/input", "key", key)
+
+    /** `POST /api/v1/display`。キオスクのモニターを auto / force_on / force_off にする。 */
+    fun display(mode: String) = post("/api/v1/display", "mode", mode)
+
+    /** `{"<field>": "<value>"}` を送り、204 を待つ。値はアプリの定数だけなのでエスケープしない。 */
+    private fun post(path: String, field: String, value: String) {
+        val c = open(path)
         try {
             c.requestMethod = "POST"
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json")
-            c.outputStream.use { it.write("""{"key":"$key"}""".toByteArray()) }
+            c.outputStream.use { it.write("""{"$field":"$value"}""".toByteArray()) }
             if (c.responseCode != 204) throw KioskHttpException(c.responseCode, c.errorMessage())
         } finally {
             c.disconnect()

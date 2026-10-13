@@ -23,8 +23,8 @@ import java.util.Locale
 @SuppressLint("ViewConstructor")
 class PanelView(
     context: Context,
-    /** ボタンが押された。`key` を送り、結果(成功なら null)を `done` で返す */
-    private val onKey: (key: String, done: (String?) -> Unit) -> Unit,
+    /** ボタンが押された。キーかモニターの切り替えを送り、結果(成功なら null)を `done` で返す */
+    private val onAction: (action: Action, done: (String?) -> Unit) -> Unit,
     private val onSettings: () -> Unit,
 ) : View(context) {
 
@@ -124,16 +124,10 @@ class PanelView(
         label(c, "WIFI", h.left + dp(624f), baseY, 18f, FG, bold)
         label(c, clock.format(Date()), h.right - dp(20f), baseY, 26f, FG, bold, Paint.Align.RIGHT)
 
-        // 左のレール: キオスクの画面一覧。現在の画面を強調する(タップでの直接遷移は P3)
-        label(c, "画面", layout.rail.left + dp(16f), layout.rail.top + dp(28f), 16f, MUTED)
-        status?.screens?.forEachIndexed { i, s ->
-            val row = layout.railRow(i)
-            val current = i == status.current
-            if (current) roundRect(c, row, ACCENT_DIM, 10f)
-            val color = if (current) FG else MUTED
-            label(c, "%02d".format(i + 1), row.left + dp(12f), row.centerY + dp(7f), 18f, color, bold)
-            label(c, s.title, row.left + dp(52f), row.centerY + dp(7f), 18f, color, if (current) bold else text)
-        }
+        // 左のレール: キオスクのモニターの状態と 消灯 / 点灯 / 自動、いちばん下に設定。
+        // 現在の画面は中央に大きく出すので、画面一覧は置かない(直接遷移ができるまで)
+        drawMonitor(c, status?.display, fresh == Freshness.OFFLINE)
+        layout.displayKeys.forEach { drawButton(c, it, now) }
         drawButton(c, layout.settings, now)
 
         // 中央: 現在の画面
@@ -142,32 +136,58 @@ class PanelView(
         val titleColor = if (dim) MUTED else FG
         when {
             !configured -> {
-                label(c, "未設定", ctr.left + dp(24f), ctr.top + dp(70f), 40f, FG, bold)
-                label(c, "左下の「設定」でキオスクの URL とトークンを入れる", ctr.left + dp(24f), ctr.top + dp(116f), 18f, MUTED)
+                label(c, "未設定", ctr.left + dp(24f), ctr.top + dp(64f), 40f, FG, bold)
+                label(c, "左下の「設定」でキオスクの URL とトークンを入れる", ctr.left + dp(24f), ctr.top + dp(100f), 18f, MUTED)
             }
             status == null -> {
-                label(c, "接続中…", ctr.left + dp(24f), ctr.top + dp(70f), 40f, MUTED, bold)
-                state.lastError?.let { label(c, it, ctr.left + dp(24f), ctr.top + dp(116f), 18f, NG) }
+                label(c, "接続中…", ctr.left + dp(24f), ctr.top + dp(64f), 40f, MUTED, bold)
             }
             else -> {
                 val cur = status.currentScreen
                 val idx = status.current?.let { "%02d ".format(it + 1) } ?: ""
-                label(c, idx + (cur?.title ?: "-"), ctr.left + dp(24f), ctr.top + dp(70f), 40f, titleColor, bold)
+                label(c, idx + (cur?.title ?: "-"), ctr.left + dp(24f), ctr.top + dp(64f), 40f, titleColor, bold)
                 val detail = buildList {
                     status.page?.let { add(it) }
                     if (cur?.id == "photo") status.photo?.let { (p, t) -> add("写真 $p / $t") }
                     add(if (status.feedOnline) "feed online" else "feed retrying")
                 }.joinToString("   ")
-                label(c, detail, ctr.left + dp(24f), ctr.top + dp(116f), 20f, MUTED)
-                if (fresh != Freshness.FRESH) {
-                    state.lastError?.let { label(c, it, ctr.left + dp(24f), ctr.top + dp(150f), 16f, NG) }
-                }
+                label(c, detail, ctr.left + dp(24f), ctr.top + dp(100f), 20f, MUTED)
             }
         }
-        lastError?.let { label(c, "送信できない: $it", ctr.left + dp(24f), ctr.top + dp(196f), 16f, NG) }
+        // エラーは 1 行だけ。送信の失敗を優先する
+        val err = lastError?.let { "送信できない: $it" }
+            ?: state.lastError?.takeIf { fresh != Freshness.FRESH || status == null }
+        err?.let { label(c, it, ctr.left + dp(24f), ctr.top + dp(128f), 16f, NG) }
 
         layout.mainKeys.forEach { drawButton(c, it, now) }
         layout.sideKeys.forEach { drawButton(c, it, now) }
+    }
+
+    /** キオスクのモニターの状態。点灯中・消灯中と、手動オーバーライドの今の値 */
+    private fun drawMonitor(c: Canvas, d: DisplayInfo?, dim: Boolean) {
+        val row = layout.monitorStatus
+        label(c, "モニター", row.left + dp(8f), row.top + dp(20f), 16f, MUTED)
+        val (state, color) = when {
+            !configured || d == null -> "-" to MUTED
+            d.on -> "点灯中" to if (dim) MUTED else OK
+            else -> "消灯中" to if (dim) MUTED else WARN
+        }
+        dot(c, row.left + dp(14f), row.top + dp(43f), color)
+        label(c, state, row.left + dp(28f), row.top + dp(50f), 20f, if (dim) MUTED else FG, bold)
+        val mode = when (d?.mode) {
+            "auto" -> "自動"
+            "force_on" -> "常に点灯"
+            "force_off" -> "常に消灯"
+            else -> null
+        }
+        mode?.let { label(c, it, row.left + dp(28f), row.top + dp(72f), 16f, MUTED) }
+    }
+
+    /** 押せるか。モニターのボタンはキオスクが切り替えられると言っているときだけ */
+    private fun usable(b: Button): Boolean = when (b.action) {
+        Action.Settings -> true
+        is Action.Key -> b.enabled && configured
+        is Action.Display -> configured && state.status?.display?.control == true
     }
 
     private fun dot(c: Canvas, x: Float, y: Float, color: Int) {
@@ -176,13 +196,15 @@ class PanelView(
     }
 
     private fun drawButton(c: Canvas, b: Button, now: Long) {
-        val usable = b.enabled && (configured || b.key == null)
+        val usable = usable(b)
         val failed = (failedUntil[b.id] ?: 0) > now
+        val selected = (b.action as? Action.Display)?.mode?.let { it == state.status?.display?.mode } == true
         val bg = when {
             failed -> NG_DIM
             b.id == pressed && usable -> ACCENT
             !usable -> PANEL
-            b.key == null -> PANEL
+            selected -> ACCENT_DIM
+            b.action == Action.Settings -> PANEL
             else -> KEY
         }
         roundRect(c, b.box, bg)
@@ -221,14 +243,14 @@ class PanelView(
     }
 
     private fun tap(b: Button) {
-        if (b.key == null) {
+        if (b.action == Action.Settings) {
             playSoundEffect(SoundEffectConstants.CLICK)
             onSettings()
             return
         }
-        if (!b.enabled || !configured) return
+        if (!usable(b)) return
         // タップで即送る。204 で押下音と触覚。失敗したら赤く点滅して再送しない(設計書 §5.6)
-        onKey(b.key) { err ->
+        onAction(b.action) { err ->
             if (err == null) {
                 lastError = null
                 playSoundEffect(SoundEffectConstants.CLICK)

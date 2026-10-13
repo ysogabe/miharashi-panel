@@ -6,6 +6,12 @@ import org.json.JSONObject
 data class ScreenInfo(val id: String, val title: String)
 
 /**
+ * キオスクのモニター。`mode` は HA の手動オーバーライド(auto / force_on / force_off、未設定なら null)。
+ * `control` が false なら、パネルからは切り替えられない。
+ */
+data class DisplayInfo(val on: Boolean, val mode: String?, val control: Boolean)
+
+/**
  * miharashi の `GET /api/v1/status` を写した不変オブジェクト(miharashi docs/panel/DESIGN.md §5.2)。
  * 表示はすべてここから組み立て直せる。アプリは状態を持たない。
  */
@@ -21,6 +27,8 @@ data class KioskStatus(
     val photo: Pair<Int, Int>?,
     val feedOnline: Boolean,
     val uptimeSeconds: Long,
+    /** 古いキオスク(display を返さない)では null */
+    val display: DisplayInfo? = null,
 ) {
     val currentScreen: ScreenInfo? get() = current?.let { screens.getOrNull(it) }
 
@@ -39,6 +47,7 @@ data class KioskStatus(
             }
             val screen = o.optJSONObject("screen")
             val photo = o.optJSONObject("photo")
+            val display = o.optJSONObject("display")
             return KioskStatus(
                 schemaVersion = o.getInt("schema_version"),
                 host = o.optString("host", "-"),
@@ -48,6 +57,13 @@ data class KioskStatus(
                 photo = photo?.let { it.getInt("position") to it.getInt("total") },
                 feedOnline = o.optString("feed") == "online",
                 uptimeSeconds = o.optLong("uptime_s", 0),
+                display = display?.let {
+                    DisplayInfo(
+                        on = it.optBoolean("on", true),
+                        mode = it.optStringOrNull("mode"),
+                        control = it.optBoolean("control", false),
+                    )
+                },
             )
         }
 
