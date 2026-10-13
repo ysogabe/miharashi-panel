@@ -124,16 +124,10 @@ class PanelView(
         label(c, "WIFI", h.left + dp(624f), baseY, 18f, FG, bold)
         label(c, clock.format(Date()), h.right - dp(20f), baseY, 26f, FG, bold, Paint.Align.RIGHT)
 
-        // 左のレール: キオスクの画面一覧。現在の画面を強調する(タップでの直接遷移は P3)
-        label(c, "画面", layout.rail.left + dp(16f), layout.rail.top + dp(28f), 16f, MUTED)
-        status?.screens?.forEachIndexed { i, s ->
-            val row = layout.railRow(i)
-            val current = i == status.current
-            if (current) roundRect(c, row, ACCENT_DIM, 10f)
-            val color = if (current) FG else MUTED
-            label(c, "%02d".format(i + 1), row.left + dp(12f), row.centerY + dp(7f), 18f, color, bold)
-            label(c, s.title, row.left + dp(52f), row.centerY + dp(7f), 18f, color, if (current) bold else text)
-        }
+        // 左のレール: キオスクのモニターの状態と 消灯 / 点灯 / 自動、いちばん下に設定。
+        // 現在の画面は中央に大きく出すので、画面一覧は置かない(直接遷移ができるまで)
+        drawMonitor(c, status?.display, fresh == Freshness.OFFLINE)
+        layout.displayKeys.forEach { drawButton(c, it, now) }
         drawButton(c, layout.settings, now)
 
         // 中央: 現在の画面
@@ -165,31 +159,28 @@ class PanelView(
             ?: state.lastError?.takeIf { fresh != Freshness.FRESH || status == null }
         err?.let { label(c, it, ctr.left + dp(24f), ctr.top + dp(128f), 16f, NG) }
 
-        drawMonitor(c, status?.display, dim)
-
         layout.mainKeys.forEach { drawButton(c, it, now) }
         layout.sideKeys.forEach { drawButton(c, it, now) }
-        layout.displayKeys.forEach { drawButton(c, it, now) }
     }
 
     /** キオスクのモニターの状態。点灯中・消灯中と、手動オーバーライドの今の値 */
     private fun drawMonitor(c: Canvas, d: DisplayInfo?, dim: Boolean) {
-        val row = layout.monitorRow
-        label(c, "モニター", row.left, row.top + dp(22f), 16f, MUTED)
+        val row = layout.monitorStatus
+        label(c, "モニター", row.left + dp(8f), row.top + dp(20f), 16f, MUTED)
         val (state, color) = when {
             !configured || d == null -> "-" to MUTED
             d.on -> "点灯中" to if (dim) MUTED else OK
             else -> "消灯中" to if (dim) MUTED else WARN
         }
-        dot(c, row.left + dp(6f), row.top + dp(44f), color)
-        label(c, state, row.left + dp(20f), row.top + dp(51f), 20f, if (dim) MUTED else FG, bold)
+        dot(c, row.left + dp(14f), row.top + dp(43f), color)
+        label(c, state, row.left + dp(28f), row.top + dp(50f), 20f, if (dim) MUTED else FG, bold)
         val mode = when (d?.mode) {
             "auto" -> "自動"
             "force_on" -> "常に点灯"
             "force_off" -> "常に消灯"
             else -> null
         }
-        mode?.let { label(c, it, row.left + dp(96f), row.top + dp(51f), 16f, MUTED) }
+        mode?.let { label(c, it, row.left + dp(28f), row.top + dp(72f), 16f, MUTED) }
     }
 
     /** 押せるか。モニターのボタンはキオスクが切り替えられると言っているときだけ */

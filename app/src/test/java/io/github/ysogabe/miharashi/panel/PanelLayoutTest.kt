@@ -26,9 +26,10 @@ class PanelLayoutTest {
     fun monitorKeysSwitchTheKioskDisplay() {
         assertEquals(listOf("消灯", "点灯", "自動"), l.displayKeys.map { it.label })
         assertEquals(listOf("force_off", "force_on", "auto").map(Action::Display), l.displayKeys.map { it.action })
-        // 4 / 5 / 6 より上、状態の文字(左)とは重ならない
-        assertTrue(l.displayKeys.all { it.box.bottom < l.mainKeys[0].box.top && it.box.left > l.monitorRow.left + 150 })
-        assertTrue(l.displayKeys.all { it.box.height >= 56 })
+        // 4 / 5 / 6 から離した左のレールに、状態の下・設定の上に縦に並べる(押し間違えないように)
+        assertTrue(l.displayKeys.all { it.box.right <= l.rail.right && it.box.right + 24 <= l.mainKeys[0].box.left })
+        assertTrue(l.displayKeys.all { it.box.top >= l.monitorStatus.bottom && it.box.bottom < l.settings.box.top })
+        assertTrue(l.displayKeys.all { it.box.height >= 64 })
     }
 
     @Test

@@ -29,7 +29,7 @@ data class Button(val id: String, val digit: String, val label: String, val acti
 
 /**
  * 操作盤の配置(設計書 §5.4)。960×480 を基準に、画面の大きさに合わせて拡大・縮小する。
- * 左に画面一覧のレール、中央に現在の画面と 4 / 5 / 6、右に 8 / 2 / 0、上にヘッダー。
+ * 左のレールにモニターの 消灯 / 点灯 / 自動 と設定、中央に現在の画面と 4 / 5 / 6、右に 8 / 2 / 0、上にヘッダー。
  */
 class PanelLayout(val width: Float, val height: Float) {
     val scale = minOf(width / BASE_W, height / BASE_H)
@@ -43,9 +43,6 @@ class PanelLayout(val width: Float, val height: Float) {
     val rail = box(0f, 56f, 200f, BASE_H)
     val center = box(200f, 56f, 720f, BASE_H)
     val side = box(720f, 56f, BASE_W, BASE_H)
-
-    /** レールの画面一覧の i 行目 */
-    fun railRow(i: Int) = box(8f, 96f + i * 52f, 192f, 96f + i * 52f + 46f)
 
     val settings = Button("settings", "", "設定", Action.Settings, box(8f, 420f, 192f, 472f), enabled = true)
 
@@ -63,14 +60,17 @@ class PanelLayout(val width: Float, val height: Float) {
         Button("menu", "0", "メニュー", Action.Key("menu"), box(736f, 336f, 944f, 456f), enabled = false),
     )
 
-    /** キオスクのモニターの行(中央、4 / 5 / 6 の上)。左に状態、右に 消灯 / 点灯 / 自動 */
-    val monitorRow = box(224f, 196f, 696f, 256f)
+    /** キオスクのモニターの状態(左のレールの上)。その下に 消灯 / 点灯 / 自動、いちばん下に設定 */
+    val monitorStatus = box(8f, 64f, 192f, 140f)
 
-    /** 押せるかどうかは、キオスクの `display.control` で決まる(PanelView が判断する) */
+    /**
+     * 4 / 5 / 6 から離して左のレールに縦に並べる(押し間違えないように)。
+     * 押せるかどうかは、キオスクの `display.control` で決まる(PanelView が判断する)
+     */
     val displayKeys = listOf(
-        Button("display_off", "", "消灯", Action.Display("force_off"), box(400f, 196f, 492f, 256f), enabled = true),
-        Button("display_on", "", "点灯", Action.Display("force_on"), box(502f, 196f, 594f, 256f), enabled = true),
-        Button("display_auto", "", "自動", Action.Display("auto"), box(604f, 196f, 696f, 256f), enabled = true),
+        Button("display_off", "", "消灯", Action.Display("force_off"), box(8f, 148f, 192f, 224f), enabled = true),
+        Button("display_on", "", "点灯", Action.Display("force_on"), box(8f, 232f, 192f, 308f), enabled = true),
+        Button("display_auto", "", "自動", Action.Display("auto"), box(8f, 316f, 192f, 392f), enabled = true),
     )
 
     val buttons = mainKeys + sideKeys + displayKeys + settings
