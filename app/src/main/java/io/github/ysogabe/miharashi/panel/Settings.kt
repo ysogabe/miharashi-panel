@@ -16,9 +16,20 @@ class Settings(context: Context) {
 
     val configured get() = validate(url, token) == null
 
+    /** 触らずにこの分数が過ぎたら操作盤を消灯する。0 なら消灯しない */
+    var sleepMinutes: Int
+        get() = prefs.getInt(KEY_SLEEP_MINUTES, DEFAULT_SLEEP_MINUTES)
+        set(v) = prefs.edit().putInt(KEY_SLEEP_MINUTES, v.coerceIn(0, MAX_SLEEP_MINUTES)).apply()
+
     companion object {
         private const val KEY_URL = "url"
         private const val KEY_TOKEN = "token"
+        private const val KEY_SLEEP_MINUTES = "sleep_minutes"
+        const val DEFAULT_SLEEP_MINUTES = 3
+        const val MAX_SLEEP_MINUTES = 240
+
+        /** 消灯までの分数の入力。0〜240 の整数なら値、それ以外は null */
+        fun parseSleepMinutes(s: String): Int? = s.trim().toIntOrNull()?.takeIf { it in 0..MAX_SLEEP_MINUTES }
 
         /** 入力の確認。問題なければ null、あれば理由。 */
         fun validate(url: String, token: String): String? {

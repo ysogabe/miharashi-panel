@@ -47,6 +47,7 @@ class PanelActivity : Activity() {
             onAction = { action, done -> sync?.send(action, done) ?: done("未接続") },
             onSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
+        view.onSleepChanged = { sleeping -> setBacklight(sleeping) }
         setContentView(view)
     }
 
@@ -62,6 +63,9 @@ class PanelActivity : Activity() {
         if (endpoint != lastEndpoint) view.state = PanelState()
         lastEndpoint = endpoint
         view.configured = settings.configured
+        // 設定から戻ったときも、ここから数え直す
+        view.sleepTimeoutMs = settings.sleepMinutes * 60_000L
+        view.wake()
         if (settings.configured) {
             sync = KioskSync(KioskClient(settings.url, settings.token), view.state) { view.state = it }
                 .also { it.start() }
@@ -78,6 +82,13 @@ class PanelActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    /** 消灯中はバックライトを最小にする。画面は真っ黒なので、焼き付き・残像を避けられる。点灯でシステムの明るさに戻す */
+    private fun setBacklight(sleeping: Boolean) {
+        window.attributes = window.attributes.apply {
+            screenBrightness = if (sleeping) 0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
     }
 
     /** immersive sticky: バーを隠し、端からのスワイプで一時的にだけ出す */

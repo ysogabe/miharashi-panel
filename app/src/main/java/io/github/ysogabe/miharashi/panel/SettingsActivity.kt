@@ -20,6 +20,7 @@ class SettingsActivity : Activity() {
     private lateinit var settings: Settings
     private lateinit var url: EditText
     private lateinit var token: EditText
+    private lateinit var sleep: EditText
     private lateinit var result: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,6 +53,14 @@ class SettingsActivity : Activity() {
             isSingleLine = true
         }
         root.addView(token, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(caption("触らずに操作盤を消灯するまでの分(0 = 消灯しない)"))
+        sleep = EditText(this).apply {
+            setText(settings.sleepMinutes.toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setTextColor(Color.WHITE)
+            isSingleLine = true
+        }
+        root.addView(sleep, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(Button(this).apply {
@@ -101,8 +110,13 @@ class SettingsActivity : Activity() {
             result.text = it
             return
         }
+        val minutes = Settings.parseSleepMinutes(sleep.text.toString()) ?: run {
+            result.text = "消灯までの分は 0〜${Settings.MAX_SLEEP_MINUTES} の整数"
+            return
+        }
         settings.url = u
         settings.token = t
+        settings.sleepMinutes = minutes
         finish()
     }
 }

@@ -47,6 +47,23 @@ class PanelView(
             invalidate()
         }
 
+    /** 消灯した・点灯したときに呼ぶ(Activity がバックライトを絞る・戻す) */
+    var onSleepChanged: (Boolean) -> Unit = {}
+
+    /** 触らずにこの時間が過ぎたら消灯する。0 なら消灯しない。設定するとその時点から数え直す */
+    var sleepTimeoutMs = 0L
+        set(value) {
+            field = value
+            idle = IdleTimer(value, SystemClock.elapsedRealtime())
+            updateSleep()
+        }
+
+    private var idle = IdleTimer(0, SystemClock.elapsedRealtime())
+    private var sleeping = false
+
+    /** 消灯中に触った指が離れるまで、その操作をボタンに渡さない */
+    private var swallowing = false
+
     private var layout = PanelLayout(PanelLayout.BASE_W, PanelLayout.BASE_H)
     private var pressed: String? = null
 
@@ -62,9 +79,25 @@ class PanelView(
 
     private val ticker = object : Runnable {
         override fun run() {
-            invalidate()
+            updateSleep()
+            if (!sleeping) invalidate()
             postDelayed(this, 1_000)
         }
+    }
+
+    private fun updateSleep() {
+        val s = idle.isSleeping(SystemClock.elapsedRealtime())
+        if (s == sleeping) return
+        sleeping = s
+        pressed = null
+        invalidate()
+        onSleepChanged(s)
+    }
+
+    /** 触ったのと同じに扱い、消灯していれば点ける(Activity に戻ったときなど) */
+    fun wake() {
+        idle.touch(SystemClock.elapsedRealtime())
+        updateSleep()
     }
 
     override fun onAttachedToWindow() {
@@ -97,6 +130,11 @@ class PanelView(
     }
 
     override fun onDraw(c: Canvas) {
+        if (sleeping) {
+            // 消灯中は真っ黒にする(バックライトは Activity が最小にする)
+            c.drawColor(Color.BLACK)
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         val fresh = state.freshness(now)
         val status = state.status
@@ -222,6 +260,15 @@ class PanelView(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+            // 消灯中の最初のタッチは点けるだけ。ボタンは押さない
+            swallowing = sleeping
+            wake()
+        }
+        if (swallowing) {
+            if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) swallowing = false
+            return true
+        }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pressed = layout.hit(e.x, e.y)?.id
