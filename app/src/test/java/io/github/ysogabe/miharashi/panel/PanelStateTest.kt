@@ -62,22 +62,18 @@ class PanelStateTest {
         assertEquals(51 to 527, s.photo)
     }
 
-    /** `rotation` を返す前のキオスク(実機)を写したものに、miharashi #47 の形の rotation を足す */
+    /** 巡回中の実機の `/status` の rotation を書き換える(無効・項目が欠けている・知らない state) */
     private fun withRotation(rotation: String) =
-        fixture("status-five-screens.json").replace("\"schema_version\"", "\"rotation\":$rotation,\"schema_version\"")
+        fixture("status-rotation-on.json").replace("\"rotation\":{\"resume_in_s\":null,\"state\":\"on\"}", "\"rotation\":$rotation")
 
     @Test
     fun parsesRotationState() {
         assertNull("rotation を返さない古いキオスク", KioskStatus.parse(fixture("status-five-screens.json")).rotation)
+        assertEquals(RotationInfo(paused = false, resumeInS = null), KioskStatus.parse(fixture("status-rotation-on.json")).rotation)
+        val paused = KioskStatus.parse(fixture("status-rotation-paused.json"))
+        assertEquals(RotationInfo(paused = true, resumeInS = 298), paused.rotation)
+        assertEquals("止めたキーで次の画面へ移っている", "room", paused.currentScreen?.id)
         assertNull("巡回が無効", KioskStatus.parse(withRotation("null")).rotation)
-        assertEquals(
-            RotationInfo(paused = false, resumeInS = null),
-            KioskStatus.parse(withRotation("""{"state":"on","resume_in_s":null}""")).rotation,
-        )
-        assertEquals(
-            RotationInfo(paused = true, resumeInS = 240),
-            KioskStatus.parse(withRotation("""{"state":"paused","resume_in_s":240}""")).rotation,
-        )
         assertEquals(
             "resume_in_s が無くても止まっていることは出す",
             RotationInfo(paused = true, resumeInS = null),
@@ -88,16 +84,16 @@ class PanelStateTest {
 
     @Test
     fun resumeCountsDownFromReceipt() {
-        val paused = KioskStatus.parse(withRotation("""{"state":"paused","resume_in_s":240}"""))
+        val paused = KioskStatus.parse(fixture("status-rotation-paused.json"))
         val st = PanelState().withStatus(paused, nowMs = 10_000)
-        assertEquals(240L, st.rotationResumeInS(10_000))
-        assertEquals("切り上げ", 239L, st.rotationResumeInS(11_500))
-        assertEquals(1L, st.rotationResumeInS(249_999))
-        assertEquals("過ぎても 0 未満にしない", 0L, st.rotationResumeInS(260_000))
+        assertEquals(298L, st.rotationResumeInS(10_000))
+        assertEquals("切り上げ", 297L, st.rotationResumeInS(11_500))
+        assertEquals(1L, st.rotationResumeInS(307_999))
+        assertEquals("過ぎても 0 未満にしない", 0L, st.rotationResumeInS(320_000))
         val extended = st.withStatus(paused.copy(rotation = RotationInfo(paused = true, resumeInS = 300)), nowMs = 20_000)
         assertEquals("新しい状態が届いたら、そこから数え直す", 300L, extended.rotationResumeInS(20_000))
 
-        val on = KioskStatus.parse(withRotation("""{"state":"on","resume_in_s":null}"""))
+        val on = KioskStatus.parse(fixture("status-rotation-on.json"))
         assertNull("巡回中", PanelState().withStatus(on, 10_000).rotationResumeInS(10_000))
         assertNull("状態がまだ無い", PanelState().rotationResumeInS(10_000))
     }
