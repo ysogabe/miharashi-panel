@@ -190,6 +190,7 @@ class PanelView(
                     add(if (status.feedOnline) "feed online" else "feed retrying")
                 }.joinToString("   ")
                 label(c, detail, ctr.left + dp(24f), ctr.top + dp(100f), 20f, MUTED)
+                status.rotation?.let { drawRotation(c, it, now, dim) }
             }
         }
         // エラーは 1 行だけ。送信の失敗を優先する
@@ -219,6 +220,28 @@ class PanelView(
             else -> null
         }
         mode?.let { label(c, it, row.left + dp(28f), row.top + dp(72f), 16f, MUTED) }
+    }
+
+    /**
+     * キオスクの自動巡回(エラーの行と 4 / 5 / 6 のあいだ)。止まっていれば、戻るまでの残りを毎秒数え下げる。
+     * 巡回が無効なキオスクでは出さない
+     */
+    private fun drawRotation(c: Canvas, r: RotationInfo, now: Long, dim: Boolean) {
+        val ctr = layout.center
+        val y = ctr.top + dp(176f)
+        val (s, color) = if (r.paused) {
+            // キオスクもパネルも切り上げるので、0 になってから戻るまで 1 秒ほどかかる
+            val left = when (val secs = state.rotationResumeInS(now)) {
+                null -> ""
+                0L -> "  まもなく再開"
+                else -> "  あと ${formatMinSec(secs)} で再開"
+            }
+            "巡回停止中$left" to WARN
+        } else {
+            "自動巡回中" to OK
+        }
+        dot(c, ctr.left + dp(30f), y - dp(7f), if (dim) MUTED else color)
+        label(c, s, ctr.left + dp(44f), y, 20f, if (dim) MUTED else FG, bold)
     }
 
     /** 押せるか。モニターのボタンはキオスクが切り替えられると言っているときだけ */
