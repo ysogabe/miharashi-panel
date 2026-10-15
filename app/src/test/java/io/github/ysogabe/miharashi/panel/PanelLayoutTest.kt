@@ -17,9 +17,10 @@ class PanelLayoutTest {
     }
 
     @Test
-    fun sideKeysAreGreyUntilPoc003() {
+    fun sideKeysSendUpDownMenu() {
         assertEquals(listOf("8", "2", "0"), l.sideKeys.map { it.digit })
-        assertTrue(l.sideKeys.none { it.enabled })
+        assertEquals(listOf("up", "down", "menu").map(Action::Key), l.sideKeys.map { it.action })
+        assertTrue(l.sideKeys.all { it.enabled })
     }
 
     @Test

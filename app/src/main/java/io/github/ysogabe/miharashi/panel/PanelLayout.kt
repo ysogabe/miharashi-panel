@@ -53,11 +53,14 @@ class PanelLayout(val width: Float, val height: Float) {
         Button("next", "6", "次へ", Action.Key("next"), box(544f, 268f, 696f, 456f), enabled = true),
     )
 
-    /** 8 / 2 / 0。キオスクの PoC-003(#5)で統一操作が入るまで灰色 */
+    /**
+     * 8 / 2 / 0(キオスクの up / down / menu、miharashi #40)。8 / 2 は画面の中の操作(写真の前後など)、0 は画面一覧のメニュー。
+     * メニューの状態は `/status` にまだ無いので、メニューはキオスクのモニターを見ながら使う(miharashi #49)
+     */
     val sideKeys = listOf(
-        Button("up", "8", "項目 ↑", Action.Key("up"), box(736f, 72f, 944f, 192f), enabled = false),
-        Button("down", "2", "項目 ↓", Action.Key("down"), box(736f, 204f, 944f, 324f), enabled = false),
-        Button("menu", "0", "メニュー", Action.Key("menu"), box(736f, 336f, 944f, 456f), enabled = false),
+        Button("up", "8", "項目 ↑", Action.Key("up"), box(736f, 72f, 944f, 192f), enabled = true),
+        Button("down", "2", "項目 ↓", Action.Key("down"), box(736f, 204f, 944f, 324f), enabled = true),
+        Button("menu", "0", "メニュー", Action.Key("menu"), box(736f, 336f, 944f, 456f), enabled = true),
     )
 
     /** キオスクのモニターの状態(左のレールの上)。その下に 消灯 / 点灯 / 自動、いちばん下に設定 */
