@@ -99,6 +99,44 @@ class PanelStateTest {
     }
 
     @Test
+    fun parsesMenuState() {
+        // パネルの 0 でメニューを開き、2 で 1 つ下げた実機の /status(表示中は AIRCRAFT、選んでいるのは T3 AGENTS)
+        val open = KioskStatus.parse(fixture("status-menu-open.json"))
+        assertEquals(4, open.menu)
+        assertEquals("aircraft", open.currentScreen?.id)
+        assertNull("閉じている", KioskStatus.parse(fixture("status-keys-aircraft.json")).menu)
+        assertNull("menu を返さない古いキオスク", KioskStatus.parse(fixture("status-rotation-on.json")).menu)
+
+        // 添字と id が食い違えば id を信じる。どちらも無ければ閉じているものとして扱う
+        val menu = "\"menu\":{\"id\":\"agents\",\"index\":4}"
+        val json = fixture("status-menu-open.json")
+        assertEquals(1, KioskStatus.parse(json.replace(menu, "\"menu\":{\"id\":\"photo\",\"index\":4}")).menu)
+        assertNull(KioskStatus.parse(json.replace(menu, "\"menu\":{\"id\":\"radar\",\"index\":9}")).menu)
+    }
+
+    @Test
+    fun parsesKeyLabels() {
+        assertEquals(
+            mapOf("prev" to "上を選ぶ", "next" to "下を選ぶ", "select" to "移動", "up" to "上を選ぶ", "down" to "下を選ぶ", "menu" to "閉じる"),
+            KioskStatus.parse(fixture("status-menu-open.json")).keys,
+        )
+        val aircraft = KioskStatus.parse(fixture("status-keys-aircraft.json")).keys!!
+        assertEquals("最寄りの機体", aircraft["select"])
+        assertEquals("前の機体", aircraft["up"])
+        assertNull("keys を返さない古いキオスク", KioskStatus.parse(fixture("status-rotation-on.json")).keys)
+
+        // 何もしないキーは null(室内環境と天気・T3 Agent の画面の 5・8・2)。項目が欠けていても null
+        val none = fixture("status-keys-aircraft.json")
+            .replace("\"down\":\"次の機体\"", "\"down\":null")
+            .replace("\"select\":\"最寄りの機体\",", "")
+        val keys = KioskStatus.parse(none).keys!!
+        assertEquals(KEY_NAMES.toSet(), keys.keys)
+        assertNull(keys["down"])
+        assertNull(keys["select"])
+        assertEquals("前の機体", keys["up"])
+    }
+
+    @Test
     fun formatsMinSec() {
         assertEquals("4:12", formatMinSec(252))
         assertEquals("0:05", formatMinSec(5))

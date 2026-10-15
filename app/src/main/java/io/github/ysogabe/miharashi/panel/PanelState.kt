@@ -17,6 +17,9 @@ data class DisplayInfo(val on: Boolean, val mode: String?, val control: Boolean)
  */
 data class RotationInfo(val paused: Boolean, val resumeInS: Long?)
 
+/** `/api/v1/input` に送る 6 つのキーの名前(キオスクの `keys` の項目名と同じ)。 */
+val KEY_NAMES = listOf("prev", "next", "select", "up", "down", "menu")
+
 /**
  * miharashi の `GET /api/v1/status` を写した不変オブジェクト(miharashi docs/panel/DESIGN.md §5.2)。
  * 表示はすべてここから組み立て直せる。アプリは状態を持たない。
@@ -37,6 +40,13 @@ data class KioskStatus(
     val display: DisplayInfo? = null,
     /** 巡回が無効か、古いキオスク(rotation を返さない)では null */
     val rotation: RotationInfo? = null,
+    /** キオスクのメニューで選んでいる画面(`screens` の添字)。閉じているか、古いキオスクでは null(miharashi #49) */
+    val menu: Int? = null,
+    /**
+     * 今それぞれのキーを押すと何が起きるかのラベル(miharashi #51)。値が null のキーは押しても何もしない。
+     * 古いキオスク(keys を返さない)では null で、パネルは汎用のラベルで出す
+     */
+    val keys: Map<String, String?>? = null,
 ) {
     val currentScreen: ScreenInfo? get() = current?.let { screens.getOrNull(it) }
 
@@ -57,6 +67,8 @@ data class KioskStatus(
             val photo = o.optJSONObject("photo")
             val display = o.optJSONObject("display")
             val rotation = o.optJSONObject("rotation")
+            val menu = o.optJSONObject("menu")
+            val keys = o.optJSONObject("keys")
             return KioskStatus(
                 schemaVersion = o.getInt("schema_version"),
                 host = o.optString("host", "-"),
@@ -82,6 +94,12 @@ data class KioskStatus(
                     )
                     else -> null
                 },
+                // 添字と id が食い違えば id を信じる。どちらも見つからなければ閉じているものとして扱う
+                menu = menu?.let { m ->
+                    m.optInt("index", -1).takeIf { screens.getOrNull(it)?.id == m.optString("id") }
+                        ?: screens.indexOfFirst { it.id == m.optString("id") }.takeIf { it >= 0 }
+                },
+                keys = keys?.let { k -> KEY_NAMES.associateWith { k.optStringOrNull(it) } },
             )
         }
 

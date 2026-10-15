@@ -68,6 +68,21 @@ class KioskClientTest {
     }
 
     @Test
+    fun screenPostsTheIdAsJson() {
+        server.enqueue(MockResponse().setResponseCode(204))
+        client.screen("room")
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertEquals("/api/v1/screen", req.path)
+        assertEquals("""{"id":"room"}""", req.body.readUtf8())
+
+        // id はキオスクから受け取った値なので、JSON として組み立てる(引用符で壊れない)
+        server.enqueue(MockResponse().setResponseCode(204))
+        client.screen("a\"b")
+        assertEquals("a\"b", org.json.JSONObject(server.takeRequest().body.readUtf8()).getString("id"))
+    }
+
+    @Test
     fun errorsCarryTheKioskMessage() {
         server.enqueue(
             MockResponse().setResponseCode(400)
