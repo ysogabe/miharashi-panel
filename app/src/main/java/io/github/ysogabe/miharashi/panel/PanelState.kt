@@ -12,6 +12,12 @@ data class ScreenInfo(val id: String, val title: String)
 data class DisplayInfo(val on: Boolean, val mode: String?, val control: Boolean)
 
 /**
+ * キオスクの自動巡回(miharashi #45)。キーや画面の選択で止まり、時間がたつと戻る。
+ * `resumeInS` は止まっているときの、受け取った時点での巡回に戻るまでの秒数(分からなければ null)。
+ */
+data class RotationInfo(val paused: Boolean, val resumeInS: Long?)
+
+/**
  * miharashi の `GET /api/v1/status` を写した不変オブジェクト(miharashi docs/panel/DESIGN.md §5.2)。
  * 表示はすべてここから組み立て直せる。アプリは状態を持たない。
  */
@@ -29,6 +35,8 @@ data class KioskStatus(
     val uptimeSeconds: Long,
     /** 古いキオスク(display を返さない)では null */
     val display: DisplayInfo? = null,
+    /** 巡回が無効か、古いキオスク(rotation を返さない)では null */
+    val rotation: RotationInfo? = null,
 ) {
     val currentScreen: ScreenInfo? get() = current?.let { screens.getOrNull(it) }
 
@@ -48,6 +56,7 @@ data class KioskStatus(
             val screen = o.optJSONObject("screen")
             val photo = o.optJSONObject("photo")
             val display = o.optJSONObject("display")
+            val rotation = o.optJSONObject("rotation")
             return KioskStatus(
                 schemaVersion = o.getInt("schema_version"),
                 host = o.optString("host", "-"),
@@ -64,6 +73,15 @@ data class KioskStatus(
                         control = it.optBoolean("control", false),
                     )
                 },
+                // 知らない state は、巡回が無いものとして扱う
+                rotation = when (rotation?.optString("state")) {
+                    "on" -> RotationInfo(paused = false, resumeInS = null)
+                    "paused" -> RotationInfo(
+                        paused = true,
+                        resumeInS = if (rotation.isNull("resume_in_s")) null else rotation.optLong("resume_in_s").coerceAtLeast(0),
+                    )
+                    else -> null
+                },
             )
         }
 
@@ -71,6 +89,9 @@ data class KioskStatus(
             if (isNull(key)) null else optString(key).ifEmpty { null }
     }
 }
+
+/** 秒を `m:ss` にする(巡回に戻るまでの残り)。 */
+fun formatMinSec(secs: Long): String = String.format(java.util.Locale.ROOT, "%d:%02d", secs / 60, secs % 60)
 
 /** ヘッダーの `API` の点灯。直近 5 秒以内に取れたら FRESH、15 秒までは STALE、それより古いと OFFLINE。 */
 enum class Freshness { FRESH, STALE, OFFLINE }
@@ -88,6 +109,17 @@ data class PanelState(
             age <= STALE_MS -> Freshness.STALE
             else -> Freshness.OFFLINE
         }
+    }
+
+    /**
+     * 巡回に戻るまでの秒数(切り上げ、0 未満にしない)。止まっていないか分からなければ null。
+     * キオスクは止める時間が変わったときしか送らないので、受け取ってからの時間を引いて数え下げる
+     */
+    fun rotationResumeInS(nowMs: Long): Long? {
+        val secs = status?.rotation?.takeIf { it.paused }?.resumeInS ?: return null
+        val at = lastOkAtMs ?: return null
+        val leftMs = secs * 1_000 - (nowMs - at)
+        return if (leftMs <= 0) 0 else (leftMs + 999) / 1_000
     }
 
     fun withStatus(s: KioskStatus, nowMs: Long) = copy(status = s, lastOkAtMs = nowMs, lastError = null)

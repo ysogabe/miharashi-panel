@@ -55,6 +55,57 @@ class PanelStateTest {
     }
 
     @Test
+    fun parsesFiveScreens() {
+        val s = KioskStatus.parse(fixture("status-five-screens.json"))
+        assertEquals(listOf("status", "photo", "room", "aircraft", "agents"), s.screens.map { it.id })
+        assertEquals("AIRCRAFT", s.currentScreen?.title)
+        assertEquals(51 to 527, s.photo)
+    }
+
+    /** 巡回中の実機の `/status` の rotation を書き換える(無効・項目が欠けている・知らない state) */
+    private fun withRotation(rotation: String) =
+        fixture("status-rotation-on.json").replace("\"rotation\":{\"resume_in_s\":null,\"state\":\"on\"}", "\"rotation\":$rotation")
+
+    @Test
+    fun parsesRotationState() {
+        assertNull("rotation を返さない古いキオスク", KioskStatus.parse(fixture("status-five-screens.json")).rotation)
+        assertEquals(RotationInfo(paused = false, resumeInS = null), KioskStatus.parse(fixture("status-rotation-on.json")).rotation)
+        val paused = KioskStatus.parse(fixture("status-rotation-paused.json"))
+        assertEquals(RotationInfo(paused = true, resumeInS = 298), paused.rotation)
+        assertEquals("止めたキーで次の画面へ移っている", "room", paused.currentScreen?.id)
+        assertNull("巡回が無効", KioskStatus.parse(withRotation("null")).rotation)
+        assertEquals(
+            "resume_in_s が無くても止まっていることは出す",
+            RotationInfo(paused = true, resumeInS = null),
+            KioskStatus.parse(withRotation("""{"state":"paused"}""")).rotation,
+        )
+        assertNull("知らない state", KioskStatus.parse(withRotation("""{"state":"warming"}""")).rotation)
+    }
+
+    @Test
+    fun resumeCountsDownFromReceipt() {
+        val paused = KioskStatus.parse(fixture("status-rotation-paused.json"))
+        val st = PanelState().withStatus(paused, nowMs = 10_000)
+        assertEquals(298L, st.rotationResumeInS(10_000))
+        assertEquals("切り上げ", 297L, st.rotationResumeInS(11_500))
+        assertEquals(1L, st.rotationResumeInS(307_999))
+        assertEquals("過ぎても 0 未満にしない", 0L, st.rotationResumeInS(320_000))
+        val extended = st.withStatus(paused.copy(rotation = RotationInfo(paused = true, resumeInS = 300)), nowMs = 20_000)
+        assertEquals("新しい状態が届いたら、そこから数え直す", 300L, extended.rotationResumeInS(20_000))
+
+        val on = KioskStatus.parse(fixture("status-rotation-on.json"))
+        assertNull("巡回中", PanelState().withStatus(on, 10_000).rotationResumeInS(10_000))
+        assertNull("状態がまだ無い", PanelState().rotationResumeInS(10_000))
+    }
+
+    @Test
+    fun formatsMinSec() {
+        assertEquals("4:12", formatMinSec(252))
+        assertEquals("0:05", formatMinSec(5))
+        assertEquals("10:00", formatMinSec(600))
+    }
+
+    @Test
     fun outOfRangeIndexIsUnknown() {
         val json = fixture("status-photo.json").replace("\"index\":1", "\"index\":7")
         assertNull(KioskStatus.parse(json).current)
