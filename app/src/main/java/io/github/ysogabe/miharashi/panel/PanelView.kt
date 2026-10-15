@@ -182,6 +182,7 @@ class PanelView(
             status == null -> {
                 label(c, "接続中…", ctr.left + dp(24f), ctr.top + dp(64f), 40f, MUTED, bold)
             }
+            status.menu != null -> drawMenu(c, status, status.menu, dim, now)
             else -> {
                 val cur = status.currentScreen
                 val idx = status.current?.let { "%02d ".format(it + 1) } ?: ""
@@ -198,7 +199,9 @@ class PanelView(
         // エラーは 1 行だけ。送信の失敗を優先する
         val err = lastError?.let { "送信できない: $it" }
             ?: state.lastError?.takeIf { fresh != Freshness.FRESH || status == null }
-        err?.let { label(c, it, ctr.left + dp(24f), ctr.top + dp(128f), 16f, NG) }
+        // メニュー中は一覧の下(キーのボタンとのあいだ)に出す
+        val errY = if (status?.menu != null) layout.menuArea.bottom + dp(18f) else ctr.top + dp(128f)
+        err?.let { label(c, it, ctr.left + dp(24f), errY, 16f, NG) }
 
         layout.mainKeys.forEach { drawButton(c, it, now) }
         layout.sideKeys.forEach { drawButton(c, it, now) }
@@ -246,11 +249,59 @@ class PanelView(
         label(c, s, ctr.left + dp(44f), y, 20f, if (dim) MUTED else FG, bold)
     }
 
-    /** 押せるか。モニターのボタンはキオスクが切り替えられると言っているときだけ */
+    /**
+     * キオスクのメニュー(miharashi #49)。画面の一覧を出し、選んでいる行を強調する。表示中の画面には「表示中」。
+     * 行をタップすると、その画面へ移る(`/api/v1/screen`。キオスクはメニューも閉じる)
+     */
+    private fun drawMenu(c: Canvas, status: KioskStatus, selected: Int, dim: Boolean, now: Long) {
+        for ((i, row) in layout.menuRows(status.screens.size, selected)) {
+            val id = menuRowId(i)
+            val failed = (failedUntil[id] ?: 0) > now
+            val bg = when {
+                failed -> NG_DIM
+                id == pressed -> ACCENT
+                i == selected -> ACCENT_DIM
+                else -> PANEL
+            }
+            roundRect(c, row, bg, 10f)
+            if (i == selected) {
+                fill.color = if (dim) MUTED else ACCENT
+                rect.set(row.left, row.top, row.left + dp(6f), row.bottom)
+                c.drawRoundRect(rect, dp(3f), dp(3f), fill)
+            }
+            val y = row.centerY + dp(7f)
+            val color = if (dim) MUTED else FG
+            label(c, "%02d".format(i + 1), row.left + dp(18f), y, 18f, MUTED, bold)
+            label(c, status.screens[i].title, row.left + dp(56f), y, 20f, color, bold)
+            if (i == status.current) label(c, "表示中", row.right - dp(14f), y, 16f, MUTED, text, Paint.Align.RIGHT)
+        }
+    }
+
+    private fun menuRowId(i: Int) = "menu:$i"
+
+    /** メニューが開いていれば、(x, y) にある行の画面の添字 */
+    private fun hitMenu(x: Float, y: Float): Int? {
+        val s = state.status ?: return null
+        val selected = s.menu ?: return null
+        return layout.menuRows(s.screens.size, selected).firstOrNull { it.second.contains(x, y) }?.first
+    }
+
+    /**
+     * ボタンに出すラベル。キーはキオスクが返す今の意味(miharashi #51)。押しても何もしないキーは null。
+     * 古いキオスク(keys を返さない)とキー以外のボタンは、決まったラベル
+     */
+    private fun labelOf(b: Button): String? {
+        val name = (b.action as? Action.Key)?.name ?: return b.label
+        val keys = state.status?.keys ?: return b.label
+        return keys[name]
+    }
+
+    /** 押せるか。キーはキオスクが意味を返しているときだけ。モニターのボタンはキオスクが切り替えられると言っているときだけ */
     private fun usable(b: Button): Boolean = when (b.action) {
         Action.Settings -> true
-        is Action.Key -> b.enabled && configured
+        is Action.Key -> b.enabled && configured && labelOf(b) != null
         is Action.Display -> configured && state.status?.display?.control == true
+        is Action.Screen -> configured
     }
 
     private fun dot(c: Canvas, x: Float, y: Float, color: Int) {
@@ -272,20 +323,35 @@ class PanelView(
         }
         roundRect(c, b.box, bg)
         val fg = if (usable) FG else DISABLED
+        // 押しても何もしないキーは、汎用のラベルを灰色で出す
+        val shown = labelOf(b) ?: b.label
         when {
-            b.icon == null -> label(c, b.label, b.box.centerX, b.box.centerY + dp(7f), 20f, fg, bold, Paint.Align.CENTER)
+            b.icon == null -> label(c, shown, b.box.centerX, b.box.centerY + dp(7f), 20f, fg, bold, Paint.Align.CENTER)
             // 縦長(前の画面・決定・次の画面): アイコンを中央に大きく、ラベルを下に
             b.box.height > dp(150f) -> {
                 drawIcon(c, b.icon, b.box.centerX, b.box.centerY - dp(14f), dp(34f), fg)
-                label(c, b.label, b.box.centerX, b.box.bottom - dp(22f), 22f, fg, bold, Paint.Align.CENTER)
+                val size = fitSize(shown, b.box.width - dp(16f), 22f)
+                label(c, shown, b.box.centerX, b.box.bottom - dp(22f), size, fg, bold, Paint.Align.CENTER)
             }
             // 横長(上・下・メニュー): アイコンを左に、ラベルを右に
             else -> {
                 drawIcon(c, b.icon, b.box.left + dp(50f), b.box.centerY, dp(24f), fg)
-                label(c, b.label, b.box.left + dp(96f), b.box.centerY + dp(8f), 22f, fg, bold)
+                val size = fitSize(shown, b.box.right - b.box.left - dp(108f), 22f)
+                label(c, shown, b.box.left + dp(96f), b.box.centerY + dp(8f), size, fg, bold)
             }
         }
     }
+    /** `s` が `maxWidth` に収まる文字の大きさ(`size` から 14 まで縮める)。キオスクのラベルは全角 6 文字まで */
+    private fun fitSize(s: String, maxWidth: Float, size: Float): Float {
+        var sp = size
+        while (sp > 14f) {
+            bold.textSize = dp(sp)
+            if (bold.measureText(s) <= maxWidth) break
+            sp -= 1f
+        }
+        return sp
+    }
+
 
     /** アイコンを (cx, cy) を中心に、半径 r ほどの大きさで塗る */
     private fun drawIcon(c: Canvas, icon: Icon, cx: Float, cy: Float, r: Float, color: Int) {
@@ -328,15 +394,19 @@ class PanelView(
         }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                pressed = layout.hit(e.x, e.y)?.id
+                pressed = layout.hit(e.x, e.y)?.id ?: hitMenu(e.x, e.y)?.let(::menuRowId)
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
                 val b = layout.hit(e.x, e.y)
+                val row = hitMenu(e.x, e.y)
                 val id = pressed
                 pressed = null
                 invalidate()
-                if (b != null && b.id == id) tap(b)
+                when {
+                    b != null && b.id == id -> tap(b)
+                    row != null && menuRowId(row) == id -> tapMenu(row)
+                }
             }
             MotionEvent.ACTION_CANCEL -> {
                 pressed = null
@@ -353,15 +423,26 @@ class PanelView(
             return
         }
         if (!usable(b)) return
-        // タップで即送る。204 で押下音と触覚。失敗したら赤く点滅して再送しない(設計書 §5.6)
-        onAction(b.action) { err ->
+        send(b.action, b.id)
+    }
+
+    /** メニューの行: その画面へ移る(キオスクはメニューも閉じる) */
+    private fun tapMenu(i: Int) {
+        val screen = state.status?.screens?.getOrNull(i) ?: return
+        if (!configured) return
+        send(Action.Screen(screen.id), menuRowId(i))
+    }
+
+    /** タップで即送る。204 で押下音と触覚。失敗したら `failId` の場所を赤く点滅させ、再送しない(設計書 §5.6) */
+    private fun send(action: Action, failId: String) {
+        onAction(action) { err ->
             if (err == null) {
                 lastError = null
                 playSoundEffect(SoundEffectConstants.CLICK)
                 performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             } else {
                 lastError = err
-                failedUntil[b.id] = SystemClock.elapsedRealtime() + FAIL_FLASH_MS
+                failedUntil[failId] = SystemClock.elapsedRealtime() + FAIL_FLASH_MS
                 performHapticFeedback(HapticFeedbackConstants.REJECT)
             }
             invalidate()

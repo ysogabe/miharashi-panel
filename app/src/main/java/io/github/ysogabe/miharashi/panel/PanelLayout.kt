@@ -20,6 +20,9 @@ sealed interface Action {
     /** `/api/v1/display` でキオスクのモニターを切り替える(auto / force_on / force_off) */
     data class Display(val mode: String) : Action
 
+    /** `/api/v1/screen` でその画面へ移る(メニューの行をタップしたとき) */
+    data class Screen(val id: String) : Action
+
     /** 設定画面を開く */
     data object Settings : Action
 }
@@ -59,8 +62,8 @@ class PanelLayout(val width: Float, val height: Float) {
 
     /**
      * 上・下・メニュー(キオスクの up / down / menu、テンキーの 8 / 2 / 0、miharashi #40)。
-     * 上・下は画面の中の操作(写真の前後など)、メニューは画面一覧。画面ごとの意味のラベルはキオスクが `/status` で返す予定(miharashi #51)。
-     * それまでは汎用のラベルで、メニューはキオスクのモニターを見ながら使う
+     * 上・下は画面の中の操作(写真の前後など)、メニューは画面一覧。`label` は汎用のもので、
+     * キオスクが `/status` の `keys` で今の意味を返せば、PanelView がそちらを出す(miharashi #51)
      */
     val sideKeys = listOf(
         Button("up", Icon.UP, "前の項目", Action.Key("up"), box(736f, 72f, 944f, 192f), enabled = true),
@@ -85,8 +88,30 @@ class PanelLayout(val width: Float, val height: Float) {
 
     fun hit(x: Float, y: Float): Button? = buttons.firstOrNull { it.box.contains(x, y) }
 
+    /** キオスクのメニューが開いているあいだ、画面の一覧を出す場所(中央の、キーのボタンより上) */
+    val menuArea = box(216f, 64f, 704f, 236f)
+
+    /**
+     * メニューの行。`count` 個の画面のうち、選んでいる `selected` が見えるように最大 [MENU_ROWS] 行を出す。
+     * 戻り値は (画面の添字, 行の矩形)。行をタップすると、その画面へ移る
+     */
+    fun menuRows(count: Int, selected: Int): List<Pair<Int, Box>> {
+        val rows = minOf(count, MENU_ROWS)
+        if (rows <= 0) return emptyList()
+        val first = (selected - rows / 2).coerceIn(0, count - rows)
+        val h = menuArea.height / MENU_ROWS
+        val gap = 4f * scale
+        return (0 until rows).map { r ->
+            val top = menuArea.top + r * h
+            (first + r) to Box(menuArea.left, top, menuArea.right, top + h - gap)
+        }
+    }
+
     companion object {
         const val BASE_W = 960f
         const val BASE_H = 480f
+
+        /** メニューに一度に出す行の数。画面がもっと多ければ、選んでいる行の前後だけを出す */
+        const val MENU_ROWS = 5
     }
 }

@@ -55,14 +55,17 @@ class KioskClient(
     /** `POST /api/v1/display`。キオスクのモニターを auto / force_on / force_off にする。 */
     fun display(mode: String) = post("/api/v1/display", "mode", mode)
 
-    /** `{"<field>": "<value>"}` を送り、204 を待つ。値はアプリの定数だけなのでエスケープしない。 */
+    /** `POST /api/v1/screen`。その画面へ移る(メニューも閉じる)。`id` はキオスクの `screens` のもの */
+    fun screen(id: String) = post("/api/v1/screen", "id", id)
+
+    /** `{"<field>": "<value>"}` を送り、204 を待つ。画面の id はキオスクから受け取った値なので、JSON として組み立てる。 */
     private fun post(path: String, field: String, value: String) {
         val c = open(path)
         try {
             c.requestMethod = "POST"
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json")
-            c.outputStream.use { it.write("""{"$field":"$value"}""".toByteArray()) }
+            c.outputStream.use { it.write(org.json.JSONObject().put(field, value).toString().toByteArray()) }
             if (c.responseCode != 204) throw KioskHttpException(c.responseCode, c.errorMessage())
         } finally {
             c.disconnect()

@@ -66,6 +66,22 @@ class PanelLayoutTest {
         assertEquals(60f, big.header.top)
         assertEquals(big.mainKeys[1].id, big.hit(960f, big.mainKeys[1].box.centerY)?.id)
     }
+
+    @Test
+    fun menuRowsFitAboveTheKeysAndKeepTheSelectionVisible() {
+        val rows = l.menuRows(count = 5, selected = 1)
+        assertEquals(listOf(0, 1, 2, 3, 4), rows.map { it.first })
+        val keysTop = l.mainKeys.minOf { it.box.top }
+        assertTrue("キーのボタンに重ならない", rows.all { it.second.bottom < keysTop })
+        assertTrue("中央に収まる", rows.all { it.second.left >= l.center.left && it.second.right <= l.center.right })
+        assertTrue("行どうしは重ならない", rows.zipWithNext().all { (a, b) -> a.second.bottom <= b.second.top })
+        assertTrue("指で押せる高さ", rows.all { it.second.height >= 28f })
+
+        // 画面がもっと多ければ、選んでいる行の前後だけを出す
+        assertEquals(listOf(5, 6, 7, 8, 9), l.menuRows(count = 10, selected = 9).map { it.first })
+        assertEquals(listOf(2, 3, 4, 5, 6), l.menuRows(count = 10, selected = 4).map { it.first })
+        assertEquals(emptyList<Pair<Int, Box>>(), l.menuRows(count = 0, selected = 0))
+    }
 }
 
 class SettingsTest {
