@@ -11,14 +11,14 @@ class PanelLayoutTest {
 
     @Test
     fun mainKeysSendPrevSelectNext() {
-        assertEquals(listOf("4", "5", "6"), l.mainKeys.map { it.digit })
+        assertEquals(listOf(Icon.PREV, Icon.SELECT, Icon.NEXT), l.mainKeys.map { it.icon })
         assertEquals(listOf("prev", "select", "next").map(Action::Key), l.mainKeys.map { it.action })
         assertTrue(l.mainKeys.all { it.enabled })
     }
 
     @Test
     fun sideKeysSendUpDownMenu() {
-        assertEquals(listOf("8", "2", "0"), l.sideKeys.map { it.digit })
+        assertEquals(listOf(Icon.UP, Icon.DOWN, Icon.MENU), l.sideKeys.map { it.icon })
         assertEquals(listOf("up", "down", "menu").map(Action::Key), l.sideKeys.map { it.action })
         assertTrue(l.sideKeys.all { it.enabled })
     }
@@ -27,7 +27,7 @@ class PanelLayoutTest {
     fun monitorKeysSwitchTheKioskDisplay() {
         assertEquals(listOf("消灯", "点灯", "自動"), l.displayKeys.map { it.label })
         assertEquals(listOf("force_off", "force_on", "auto").map(Action::Display), l.displayKeys.map { it.action })
-        // 4 / 5 / 6 から離した左のレールに、状態の下・設定の上に縦に並べる(押し間違えないように)
+        // キーのボタンから離した左のレールに、状態の下・設定の上に縦に並べる(押し間違えないように)
         assertTrue(l.displayKeys.all { it.box.right <= l.rail.right && it.box.right + 24 <= l.mainKeys[0].box.left })
         assertTrue(l.displayKeys.all { it.box.top >= l.monitorStatus.bottom && it.box.bottom < l.settings.box.top })
         assertTrue(l.displayKeys.all { it.box.height >= 64 })

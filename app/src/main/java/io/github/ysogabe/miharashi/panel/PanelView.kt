@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.SystemClock
@@ -76,6 +77,7 @@ class PanelView(
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT }
     private val bold = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
     private val rect = RectF()
+    private val path = Path()
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -223,7 +225,7 @@ class PanelView(
     }
 
     /**
-     * キオスクの自動巡回(エラーの行と 4 / 5 / 6 のあいだ)。止まっていれば、戻るまでの残りを毎秒数え下げる。
+     * キオスクの自動巡回(エラーの行と、前の画面・決定・次の画面のあいだ)。止まっていれば、戻るまでの残りを毎秒数え下げる。
      * 巡回が無効なキオスクでは出さない
      */
     private fun drawRotation(c: Canvas, r: RotationInfo, now: Long, dim: Boolean) {
@@ -270,15 +272,47 @@ class PanelView(
         }
         roundRect(c, b.box, bg)
         val fg = if (usable) FG else DISABLED
-        if (b.digit.isEmpty()) {
-            label(c, b.label, b.box.centerX, b.box.centerY + dp(7f), 20f, fg, bold, Paint.Align.CENTER)
-        } else if (b.box.height > dp(150f)) {
-            label(c, b.digit, b.box.centerX, b.box.centerY + dp(10f), 72f, fg, bold, Paint.Align.CENTER)
-            label(c, b.label, b.box.centerX, b.box.bottom - dp(20f), 20f, fg, text, Paint.Align.CENTER)
-        } else {
-            label(c, b.digit, b.box.left + dp(24f), b.box.centerY + dp(16f), 44f, fg, bold)
-            label(c, b.label, b.box.left + dp(80f), b.box.centerY + dp(8f), 20f, fg, text)
+        when {
+            b.icon == null -> label(c, b.label, b.box.centerX, b.box.centerY + dp(7f), 20f, fg, bold, Paint.Align.CENTER)
+            // 縦長(前の画面・決定・次の画面): アイコンを中央に大きく、ラベルを下に
+            b.box.height > dp(150f) -> {
+                drawIcon(c, b.icon, b.box.centerX, b.box.centerY - dp(14f), dp(34f), fg)
+                label(c, b.label, b.box.centerX, b.box.bottom - dp(22f), 22f, fg, bold, Paint.Align.CENTER)
+            }
+            // 横長(上・下・メニュー): アイコンを左に、ラベルを右に
+            else -> {
+                drawIcon(c, b.icon, b.box.left + dp(50f), b.box.centerY, dp(24f), fg)
+                label(c, b.label, b.box.left + dp(96f), b.box.centerY + dp(8f), 22f, fg, bold)
+            }
         }
+    }
+
+    /** アイコンを (cx, cy) を中心に、半径 r ほどの大きさで塗る */
+    private fun drawIcon(c: Canvas, icon: Icon, cx: Float, cy: Float, r: Float, color: Int) {
+        fill.color = color
+        when (icon) {
+            Icon.PREV -> triangle(c, cx - r, cy, cx + r * 0.7f, cy - r, cx + r * 0.7f, cy + r)
+            Icon.NEXT -> triangle(c, cx + r, cy, cx - r * 0.7f, cy - r, cx - r * 0.7f, cy + r)
+            Icon.UP -> triangle(c, cx, cy - r, cx - r, cy + r * 0.7f, cx + r, cy + r * 0.7f)
+            Icon.DOWN -> triangle(c, cx, cy + r, cx - r, cy - r * 0.7f, cx + r, cy - r * 0.7f)
+            Icon.SELECT -> c.drawCircle(cx, cy, r * 0.75f, fill)
+            Icon.MENU -> {
+                val h = r * 0.26f
+                for (dy in listOf(-r * 0.7f, 0f, r * 0.7f)) {
+                    rect.set(cx - r, cy + dy - h / 2, cx + r, cy + dy + h / 2)
+                    c.drawRoundRect(rect, h / 2, h / 2, fill)
+                }
+            }
+        }
+    }
+
+    private fun triangle(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, x3: Float, y3: Float) {
+        path.reset()
+        path.moveTo(x1, y1)
+        path.lineTo(x2, y2)
+        path.lineTo(x3, y3)
+        path.close()
+        c.drawPath(path, fill)
     }
 
     @SuppressLint("ClickableViewAccessibility")
