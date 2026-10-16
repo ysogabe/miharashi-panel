@@ -12,10 +12,18 @@ data class ScreenInfo(val id: String, val title: String)
 data class DisplayInfo(val on: Boolean, val mode: String?, val control: Boolean)
 
 /**
- * キオスクの自動巡回(miharashi #45)。キーや画面の選択で止まり、時間がたつと戻る。
- * `resumeInS` は止まっているときの、受け取った時点での巡回に戻るまでの秒数(分からなければ null)。
+ * キオスクの自動巡回の状態。PAUSED はキーや画面の選択で止まっていて、時間がたつと戻る(miharashi #45)。
+ * OFF はパネルから止めたままにしていて、再開するまで戻らない(miharashi #57)
  */
-data class RotationInfo(val paused: Boolean, val resumeInS: Long?)
+enum class RotationState { ON, PAUSED, OFF }
+
+/**
+ * キオスクの自動巡回。`resumeInS` は PAUSED のときの、受け取った時点での巡回に戻るまでの秒数(分からなければ null)。
+ * `control` が false なら、パネルからは止められない(`/api/v1/rotation` が無い古いキオスク)
+ */
+data class RotationInfo(val state: RotationState, val resumeInS: Long? = null, val control: Boolean = false) {
+    val paused: Boolean get() = state == RotationState.PAUSED
+}
 
 /** `/api/v1/input` に送る 6 つのキーの名前(キオスクの `keys` の項目名と同じ)。 */
 val KEY_NAMES = listOf("prev", "next", "select", "up", "down", "menu")
@@ -86,13 +94,18 @@ data class KioskStatus(
                     )
                 },
                 // 知らない state は、巡回が無いものとして扱う
-                rotation = when (rotation?.optString("state")) {
-                    "on" -> RotationInfo(paused = false, resumeInS = null)
-                    "paused" -> RotationInfo(
-                        paused = true,
-                        resumeInS = if (rotation.isNull("resume_in_s")) null else rotation.optLong("resume_in_s").coerceAtLeast(0),
+                rotation = rotation?.let { r ->
+                    val state = when (r.optString("state")) {
+                        "on" -> RotationState.ON
+                        "paused" -> RotationState.PAUSED
+                        "off" -> RotationState.OFF
+                        else -> return@let null
+                    }
+                    RotationInfo(
+                        state = state,
+                        resumeInS = if (state != RotationState.PAUSED || r.isNull("resume_in_s")) null else r.optLong("resume_in_s").coerceAtLeast(0),
+                        control = r.optBoolean("control", false),
                     )
-                    else -> null
                 },
                 // 添字と id が食い違えば id を信じる。どちらも見つからなければ閉じているものとして扱う
                 menu = menu?.let { m ->

@@ -54,6 +54,19 @@ class PanelLayoutTest {
     }
 
     @Test
+    fun rotationRowSitsAboveTheKeysWithoutOverlapping() {
+        val r = l.rotationRow
+        assertTrue("中央に収まる", r.left >= l.center.left && r.right <= l.center.right)
+        assertTrue("キーのボタンから離す", r.bottom + 12 <= l.mainKeys.minOf { it.box.top })
+        for (b in l.buttons) {
+            val overlap = r.left < b.box.right && b.box.left < r.right && r.top < b.box.bottom && b.box.top < r.bottom
+            assertFalse(b.id, overlap)
+        }
+        assertNull("ボタンの判定には入れない(PanelView が巡回の状態で決める)", l.hit(r.centerX, r.centerY))
+        assertTrue("指で押せる高さ", r.height >= 40)
+    }
+
+    @Test
     fun mainKeysAreLargeEnoughToTap() {
         // 960×480・195dpi の Echo Show 5 で 1 辺 1.8cm 以上(指先で外さない大きさ)
         assertTrue(l.mainKeys.all { it.box.width >= 140 && it.box.height >= 140 })

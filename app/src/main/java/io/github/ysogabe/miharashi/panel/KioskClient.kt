@@ -55,6 +55,9 @@ class KioskClient(
     /** `POST /api/v1/display`。キオスクのモニターを auto / force_on / force_off にする。 */
     fun display(mode: String) = post("/api/v1/display", "mode", mode)
 
+    /** `POST /api/v1/rotation`。キオスクの自動巡回を止めたままにする(off)・再開する(on)。 */
+    fun rotation(mode: String) = post("/api/v1/rotation", "mode", mode)
+
     /** `POST /api/v1/screen`。その画面へ移る(メニューも閉じる)。`id` はキオスクの `screens` のもの */
     fun screen(id: String) = post("/api/v1/screen", "id", id)
 
