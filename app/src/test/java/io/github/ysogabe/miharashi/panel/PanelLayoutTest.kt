@@ -54,16 +54,19 @@ class PanelLayoutTest {
     }
 
     @Test
-    fun rotationRowSitsAboveTheKeysWithoutOverlapping() {
-        val r = l.rotationRow
-        assertTrue("中央に収まる", r.left >= l.center.left && r.right <= l.center.right)
+    fun screenCardSitsAboveTheKeysWithoutOverlapping() {
+        val r = l.screenCard
+        assertTrue("中央に収まる", r.left >= l.center.left && r.right <= l.center.right && r.top >= l.center.top)
         assertTrue("キーのボタンから離す", r.bottom + 12 <= l.mainKeys.minOf { it.box.top })
         for (b in l.buttons) {
             val overlap = r.left < b.box.right && b.box.left < r.right && r.top < b.box.bottom && b.box.top < r.bottom
             assertFalse(b.id, overlap)
         }
         assertNull("ボタンの判定には入れない(PanelView が巡回の状態で決める)", l.hit(r.centerX, r.centerY))
-        assertTrue("指で押せる高さ", r.height >= 40)
+        // 巡回の固定・再開のボタンを兼ねるので、前の画面・決定・次の画面と同じくらい押しやすくする
+        assertTrue("指で押せる大きさ", r.height >= 150 && r.width >= 400)
+        val band = l.rotationBand
+        assertTrue("巡回の帯はカードの下の端", band.left == r.left && band.right == r.right && band.bottom == r.bottom && band.top > r.top)
     }
 
     @Test
