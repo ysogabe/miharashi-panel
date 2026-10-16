@@ -92,11 +92,15 @@ class PanelLayout(val width: Float, val height: Float) {
     fun hit(x: Float, y: Float): Button? = buttons.firstOrNull { it.box.contains(x, y) }
 
     /**
-     * キオスクの自動巡回の行(中央の、前の画面・決定・次の画面の上)。左に状態、右に「止める」「再開」。
-     * 押すかどうかは巡回の状態で変わるので、`buttons` には入れず PanelView が判定する。
+     * 現在の画面のカード(中央の、前の画面・決定・次の画面の上)。上に画面の名前、下の帯にキオスクの自動巡回の状態。
+     * キオスクが巡回を止められるなら、カード全体が巡回を固定する・再開するボタンになる(細い行だと押しにくい)。
+     * 押せるかどうかは巡回の状態で変わるので、`buttons` には入れず PanelView が判定する。
      * メニューを開いているあいだは出さない(一覧の行と重なる)
      */
-    val rotationRow = box(216f, 204f, 704f, 252f)
+    val screenCard = box(216f, 64f, 704f, 252f)
+
+    /** カードの下の帯。左に巡回の状態、右に押すと何が起きるか */
+    val rotationBand = box(216f, 196f, 704f, 252f)
 
     /** キオスクのメニューが開いているあいだ、画面の一覧を出す場所(中央の、キーのボタンより上) */
     val menuArea = box(216f, 64f, 704f, 236f)

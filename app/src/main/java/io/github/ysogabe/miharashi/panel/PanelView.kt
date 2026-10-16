@@ -74,6 +74,7 @@ class PanelView(
 
     private val clock = SimpleDateFormat("HH:mm", Locale.JAPAN)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT }
     private val bold = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
     private val rect = RectF()
@@ -122,6 +123,15 @@ class PanelView(
         fill.color = color
         rect.set(b.left, b.top, b.right, b.bottom)
         c.drawRoundRect(rect, dp(radius), dp(radius), fill)
+    }
+
+    /** 角の丸い枠を、線の太さ `width` で `b` の内側に描く */
+    private fun strokeRoundRect(c: Canvas, b: Box, color: Int, width: Float, radius: Float = 14f) {
+        stroke.color = color
+        stroke.strokeWidth = dp(width)
+        val half = dp(width) / 2
+        rect.set(b.left + half, b.top + half, b.right - half, b.bottom - half)
+        c.drawRoundRect(rect, dp(radius) - half, dp(radius) - half, stroke)
     }
 
     private fun label(c: Canvas, s: String, x: Float, y: Float, size: Float, color: Int, p: Paint = text, align: Paint.Align = Paint.Align.LEFT) {
@@ -173,7 +183,6 @@ class PanelView(
         // 中央: 現在の画面
         val ctr = layout.center
         val dim = fresh == Freshness.OFFLINE
-        val titleColor = if (dim) MUTED else FG
         when {
             !configured -> {
                 label(c, "未設定", ctr.left + dp(24f), ctr.top + dp(64f), 40f, FG, bold)
@@ -183,25 +192,18 @@ class PanelView(
                 label(c, "接続中…", ctr.left + dp(24f), ctr.top + dp(64f), 40f, MUTED, bold)
             }
             status.menu != null -> drawMenu(c, status, status.menu, dim, now)
-            else -> {
-                val cur = status.currentScreen
-                val idx = status.current?.let { "%02d ".format(it + 1) } ?: ""
-                label(c, idx + (cur?.title ?: "-"), ctr.left + dp(24f), ctr.top + dp(64f), 40f, titleColor, bold)
-                val detail = buildList {
-                    status.page?.let { add(it) }
-                    if (cur?.id == "photo") status.photo?.let { (p, t) -> add("写真 $p / $t") }
-                    add(if (status.feedOnline) "feed online" else "feed retrying")
-                }.joinToString("   ")
-                label(c, detail, ctr.left + dp(24f), ctr.top + dp(100f), 20f, MUTED)
-                status.rotation?.let { drawRotation(c, it, now, dim) }
-            }
+            else -> drawScreenCard(c, status, now, dim)
         }
         // エラーは 1 行だけ。送信の失敗を優先する
         val err = lastError?.let { "送信できない: $it" }
             ?: state.lastError?.takeIf { fresh != Freshness.FRESH || status == null }
-        // メニュー中は一覧の下(キーのボタンとのあいだ)に出す
-        val errY = if (status?.menu != null) layout.menuArea.bottom + dp(18f) else ctr.top + dp(128f)
-        err?.let { label(c, it, ctr.left + dp(24f), errY, 16f, NG) }
+        // メニュー中は一覧の下(キーのボタンとのあいだ)に、カードがあればその中の、画面の詳細と巡回の帯のあいだに出す
+        val (errX, errY) = when {
+            status?.menu != null -> ctr.left + dp(24f) to layout.menuArea.bottom + dp(18f)
+            status != null && configured -> layout.screenCard.left + dp(24f) to ctr.top + dp(128f)
+            else -> ctr.left + dp(24f) to ctr.top + dp(128f)
+        }
+        err?.let { label(c, it, errX, errY, 16f, NG) }
 
         layout.mainKeys.forEach { drawButton(c, it, now) }
         layout.sideKeys.forEach { drawButton(c, it, now) }
@@ -228,22 +230,61 @@ class PanelView(
     }
 
     /**
-     * キオスクの自動巡回(エラーの行と、前の画面・決定・次の画面のあいだ)。止まっていれば、戻るまでの残りを毎秒数え下げる。
-     * 巡回が無効なキオスクでは出さない。キオスクが止められると言っていれば(miharashi #57)、行ごと押せるボタンにし、
-     * 右に押すと何が起きるか(止める / 再開)を出す
+     * 現在の画面のカード。上に画面の名前と詳細、下の帯にキオスクの自動巡回(巡回が無効なキオスクでは帯を出さない)。
+     * キオスクが巡回を止められると言っていれば(miharashi #57)、カード全体を押せるボタンにして枠を付け、
+     * 帯の右に押すと何が起きるか(固定 / 再開)を出す。固定中は青い面と枠、右上に「固定」の札
      */
-    private fun drawRotation(c: Canvas, r: RotationInfo, now: Long, dim: Boolean) {
-        val row = layout.rotationRow
+    private fun drawScreenCard(c: Canvas, status: KioskStatus, now: Long, dim: Boolean) {
+        val card = layout.screenCard
+        val r = status.rotation
+        val fixed = r?.state == RotationState.OFF
         val tappable = rotationTappable()
-        if (tappable) {
-            val bg = when {
-                (failedUntil[ROTATION_ID] ?: 0) > now -> NG_DIM
-                pressed == ROTATION_ID -> ACCENT
-                else -> KEY
-            }
-            roundRect(c, row, bg, 10f)
+        val bg = when {
+            tappable && (failedUntil[ROTATION_ID] ?: 0) > now -> NG_DIM
+            tappable && pressed == ROTATION_ID -> ACCENT
+            fixed -> ACCENT_DIM
+            else -> PANEL
         }
-        val y = row.centerY + dp(7f)
+        roundRect(c, card, bg)
+        val edge = if (fixed) (if (dim) MUTED else ACCENT) else KEY
+        if (fixed) strokeRoundRect(c, card, edge, 3f) else if (tappable) strokeRoundRect(c, card, edge, 2f)
+
+        val badgeW = dp(88f)
+        if (fixed) {
+            val badge = Box(card.right - dp(16f) - badgeW, card.top + dp(16f), card.right - dp(16f), card.top + dp(52f))
+            // 押しているあいだはカードが青くなるので、札は暗い青にして消えないようにする
+            val badgeColor = when {
+                dim -> MUTED
+                tappable && pressed == ROTATION_ID -> ACCENT_DIM
+                else -> ACCENT
+            }
+            roundRect(c, badge, badgeColor, 18f)
+            label(c, "固定", badge.centerX, badge.centerY + dp(7f), 20f, if (badgeColor == ACCENT_DIM) FG else BG, bold, Paint.Align.CENTER)
+        }
+        val cur = status.currentScreen
+        val idx = status.current?.let { "%02d ".format(it + 1) } ?: ""
+        val title = idx + (cur?.title ?: "-")
+        // 長い画面の名前は、札に重ならないように縮める
+        val titleW = card.width - dp(48f) - if (fixed) badgeW + dp(8f) else 0f
+        label(c, title, card.left + dp(24f), card.top + dp(56f), fitSize(title, titleW, 40f, 24f), if (dim) MUTED else FG, bold)
+        val detail = buildList {
+            status.page?.let { add(it) }
+            if (cur?.id == "photo") status.photo?.let { (p, t) -> add("写真 $p / $t") }
+            add(if (status.feedOnline) "feed online" else "feed retrying")
+        }.joinToString("   ")
+        label(c, detail, card.left + dp(24f), card.top + dp(92f), 20f, MUTED)
+        r?.let { drawRotation(c, it, now, dim, tappable, edge) }
+    }
+
+    /**
+     * カードの下の帯に、キオスクの自動巡回。止まっていれば、戻るまでの残りを毎秒数え下げる。
+     * 押せるなら、右に押すと何が起きるかを出す
+     */
+    private fun drawRotation(c: Canvas, r: RotationInfo, now: Long, dim: Boolean, tappable: Boolean, edge: Int) {
+        val band = layout.rotationBand
+        fill.color = edge
+        c.drawRect(band.left + dp(16f), band.top, band.right - dp(16f), band.top + dp(1f), fill)
+        val y = band.centerY + dp(7f)
         val (s, color) = when (r.state) {
             RotationState.PAUSED -> {
                 // キオスクもパネルも切り上げるので、0 になってから戻るまで 1 秒ほどかかる
@@ -255,25 +296,30 @@ class PanelView(
                 "巡回停止中$left" to WARN
             }
             // OFFLINE で薄くしたとき(MUTED)と見分けられる色にする
-            RotationState.OFF -> "巡回を止めています" to ACCENT
+            RotationState.OFF -> "この画面で固定中" to ACCENT
             RotationState.ON -> "自動巡回中" to OK
         }
-        dot(c, row.left + dp(14f), y - dp(7f), if (dim) MUTED else color)
-        label(c, s, row.left + dp(28f), y, 20f, if (dim) MUTED else FG, bold)
+        dot(c, band.left + dp(30f), y - dp(7f), if (dim) MUTED else color)
+        label(c, s, band.left + dp(44f), y, 20f, if (dim) MUTED else FG, bold)
         if (tappable) {
-            val action = if (r.state == RotationState.OFF) "再開" else "止める"
-            label(c, action, row.right - dp(16f), y, 20f, if (dim) MUTED else FG, bold, Paint.Align.RIGHT)
+            val (hint, hintColor) = when (r.state) {
+                RotationState.ON -> "タップで この画面に固定" to MUTED
+                // 残りの秒数で横に長くなるので短く
+                RotationState.PAUSED -> "タップで 固定" to MUTED
+                RotationState.OFF -> "タップで 巡回を再開" to ACCENT
+            }
+            label(c, hint, band.right - dp(20f), y, 18f, if (dim) MUTED else hintColor, text, Paint.Align.RIGHT)
         }
     }
 
-    /** 巡回の行が出ていて、押せるか(キオスクが `/api/v1/rotation` を受け付ける。メニュー中は行を出さない) */
+    /** 現在の画面のカードが出ていて、巡回の固定・再開に押せるか(キオスクが `/api/v1/rotation` を受け付ける。メニュー中はカードを出さない) */
     private fun rotationTappable(): Boolean {
         val s = state.status ?: return false
         return configured && s.menu == null && s.rotation?.control == true
     }
 
-    /** (x, y) が押せる巡回の行の上か */
-    private fun hitRotation(x: Float, y: Float): Boolean = rotationTappable() && layout.rotationRow.contains(x, y)
+    /** (x, y) が押せる現在の画面のカードの上か */
+    private fun hitRotation(x: Float, y: Float): Boolean = rotationTappable() && layout.screenCard.contains(x, y)
 
     /**
      * キオスクのメニュー(miharashi #49)。画面の一覧を出し、選んでいる行を強調する。表示中の画面には「表示中」。
@@ -368,10 +414,10 @@ class PanelView(
             }
         }
     }
-    /** `s` が `maxWidth` に収まる文字の大きさ(`size` から 14 まで縮める)。キオスクのラベルは全角 6 文字まで */
-    private fun fitSize(s: String, maxWidth: Float, size: Float): Float {
+    /** `s` が `maxWidth` に収まる太字の大きさ(`size` から `min` まで縮める)。キオスクのラベルは全角 6 文字まで */
+    private fun fitSize(s: String, maxWidth: Float, size: Float, min: Float = 14f): Float {
         var sp = size
-        while (sp > 14f) {
+        while (sp > min) {
             bold.textSize = dp(sp)
             if (bold.measureText(s) <= maxWidth) break
             sp -= 1f
@@ -463,7 +509,7 @@ class PanelView(
         send(Action.Screen(screen.id), menuRowId(i))
     }
 
-    /** 巡回の行: 止めたままなら再開し、回っているか一時停止中なら止めたままにする(miharashi #57) */
+    /** 現在の画面のカード: 固定中なら巡回を再開し、回っているか一時停止中なら今の画面で固定する(miharashi #57) */
     private fun tapRotation() {
         val r = state.status?.rotation ?: return
         send(Action.Rotation(if (r.state == RotationState.OFF) "on" else "off"), ROTATION_ID)
