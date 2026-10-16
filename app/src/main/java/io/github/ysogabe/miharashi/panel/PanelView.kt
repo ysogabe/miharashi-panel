@@ -254,7 +254,8 @@ class PanelView(
                 }
                 "巡回停止中$left" to WARN
             }
-            RotationState.OFF -> "巡回を止めています" to MUTED
+            // OFFLINE で薄くしたとき(MUTED)と見分けられる色にする
+            RotationState.OFF -> "巡回を止めています" to ACCENT
             RotationState.ON -> "自動巡回中" to OK
         }
         dot(c, row.left + dp(14f), y - dp(7f), if (dim) MUTED else color)
