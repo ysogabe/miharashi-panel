@@ -1,74 +1,34 @@
-# miharashi-panel
+# Miharashi Panel
 
-[Miharashi](https://github.com/ysogabe/miharashi)(Linux キオスク・ダッシュボード)を手元で操作する Android アプリです。Android 化した Echo Show 5(LineageOS 18.1、960×480)で動かすことを想定しています。
+**手元の小さな画面から、モニターを操作する。**
 
-キオスクの panel API(LAN 内の HTTP、Bearer トークン)に、キーボードと同じキー操作を送ります。画面の切り替えやメニューの論理はキオスク側にあり、このアプリは状態を持ちません。表示はすべて `/api/v1/status` と SSE(`/api/v1/events`)から組み立てます。
+[Miharashi](https://github.com/ysogabe/miharashi) を手元で操作する Android アプリです。Android 化した Echo Show 5 を専用の操作盤にして、画面の切り替えやモニターの消灯・点灯を操作できます。
 
-設計は miharashi の [docs/panel/DESIGN.md](https://github.com/ysogabe/miharashi/blob/main/docs/panel/DESIGN.md) にあります。このリポジトリは、その §6 の P2(最小版)にあたります。
+**紹介ページ(LP): https://ysogabe.github.io/miharashi-panel/**
 
-## できること(v0.2.0)
+![Echo Show 5 の操作盤。中央に表示中の画面と巡回の固定状態、左右に操作ボタン](site/images/panel-v020.png)
 
-- 中央の「◀ 前の画面 / ● 決定 / ▶ 次の画面」と、右の「▲ 前の項目 / ▼ 次の項目 / ☰ メニュー」のボタン。キオスクのテンキーの 4 / 5 / 6 / 8 / 2 / 0 と同じ `prev` / `select` / `next` / `up` / `down` / `menu` を送ります。数字は出さず、アイコンと「今押すと何が起きるか」のラベルで出します。ラベルはキオスクが `/status` の `keys` で返すもので(miharashi #51)、画面ごとに変わります(写真の画面なら「前の写真 / 次の写真」、メニュー中なら「上を選ぶ / 移動 / 閉じる」)。今の画面で何もしないキーは灰色で、押しても送りません。`keys` を返さない古いキオスクでは「前の項目 / 次の項目」などの汎用のラベルで出します。押すと即 `POST /api/v1/input` を送り、204 で押下音と触覚を返します。失敗したらボタンが赤く点滅し、再送はしません。
-- キオスクのモニターの「消灯 / 点灯 / 自動」。押すと `POST /api/v1/display` を送り、キオスクが Home Assistant の手動オーバーライド(input_select の force_off / force_on / auto)を切り替えます。HA と表示は常に一致します。キオスク側に HA 連携が無ければ灰色です。
-- 中央に、表示中の画面名、ページ、写真の n/N、feed の状態。
-- キオスクのメニュー(miharashi #49)。メニューを開くと、中央に画面の一覧を出し、選んでいる行を強調します(表示中の画面には「表示中」)。行をタップすると、その画面へ直接移ります(`POST /api/v1/screen`。キオスクはメニューも閉じます)。
-- キオスクの自動巡回(miharashi #45)。中央に「自動巡回中」(緑)か「巡回停止中 あと 4:12 で再開」(黄)。キーや画面の選択で止まった巡回が戻るまでの残りを、パネルが毎秒数え下げます。巡回が無効なキオスクや、`rotation` を返さない古いキオスクでは出しません。
-- 自動巡回を止めて今の画面で固定する・再開する(miharashi #57)。中央の現在の画面のカード全体がボタンで、下の帯の左に巡回の状態、右に「タップで この画面に固定」か「タップで 巡回を再開」を出します。固定すると、カードが青い面と枠になり、右上に「固定」の札、帯に「この画面で固定中」と出て、キーを押しても戻りません。再開すると、キオスクはすぐ次の画面へ移ります。押すと `POST /api/v1/rotation` を送ります。止めた状態はキオスクを再起動すると戻ります。`rotation.control` を返さない古いキオスクでは、状態を出すだけで押せません。
-- ヘッダーの `API` の点灯。直近 5 秒以内に取れたら緑、15 秒までは `STALE`(黄)、それより古いと `OFFLINE`(赤)。OFFLINE のあいだも、最後の状態を薄く残して出します。
-- 起動時と 5 秒ごとに `/status` を読み、並行して SSE を受けます。SSE が切れたら 1、2、4 … 30 秒の間隔で再接続します。
-- 端末の起動時とアプリの更新時に自動で前面に出ます。スワイプだけのロック画面より手前に出ます。
-- 全画面(immersive)、横固定。触らずに 3 分(設定で変えられる。0 で無効)たつと、画面を真っ黒にしてバックライトを最小にします(焼き付き・残像を避けるため)。触ると点き、その最初のタッチではボタンを押しません。
+## できること
 
-夜間の減光は P3 です。
+- **見たい画面を選ぶ**: 前後のボタンで切り替えたり、メニューの一覧から直接選んだりできます。
+- **画面に合わせて操作する**: 写真の前後移動など、その画面でできる操作をボタンの説明で案内します。
+- **好きな画面で固定する**: 自動巡回の状態と再開までの残り時間を表示し、巡回の停止・再開も操作できます。
+- **モニターを手元から操作する**: Home Assistant と連携した本体に、消灯・点灯・自動の切り替えを送ります。
+- **本体の状態を確認する**: 表示中の画面名や写真の何枚目か、接続状態が手元で分かります。
+- **触らなければ操作盤を暗くする**: 初期設定では 3 分で画面を黒くして明るさを最小にします。触ると元に戻り、最初のタッチでは操作を送りません。
 
-## ビルド
+## 動作環境
 
-JDK 17 と Android SDK(platform 35、build-tools 35)が必要です。`local.properties` に `sdk.dir=...` を書いてから実行します。
+Android 化した Echo Show 5（LineageOS 18.1、Android 11、960×480）で使用しています。アプリの最小対応は Android 11（API 30）ですが、ほかの端末での動作は未確認です。Echo Show の Android 化の手順は、このリポジトリでは扱いません。
 
-```sh
-./gradlew testDebugUnitTest assembleDebug
-```
+接続先は、同じ LAN にある Miharashi 本体の panel API です。URL と認証用トークンを設定して使います。モニターの操作には本体の Home Assistant 連携、巡回の固定・再開には本体の自動巡回設定と対応 API が必要です。
 
-単体テストは JVM で動きます。`app/src/test/resources/fixtures/` には、miharashi の実機の `/api/v1/status` をそのまま写した JSON を置いています。
+## いまの状態
 
-## 端末に入れる
+v0.2.0 では、メニューからの画面選択、画面に応じたボタンの説明、自動巡回の状態表示と固定・再開に対応しています。端末起動時の自動表示と、操作盤の自動消灯にも対応しています。
 
-USB か `adb connect` で端末をつないでから実行します。
+画面や巡回の状態は本体から取得します。端末に保存するのは接続先などの設定だけです。夜間だけ明るさを変える機能は作らず、操作盤の自動消灯で代替する方針です。
 
-```sh
-# 入れて起動する。「他のアプリの上に表示」の許可(起動時に前面へ出すため)も adb で与える
-./scripts/install.sh
+## 使う・開発する
 
-# 設定(キオスクの URL とトークン)も書き込む。debug ビルドだけ(run-as を使う)
-./scripts/install.sh --url http://192.168.0.132:8790 --token-file panel.token
-
-# ランチャー(HOME)にも指定する。Home を押しても操作盤に戻る
-./scripts/install.sh --home
-```
-
-端末の上で設定するときは、左下の「設定」をタップします。長いトークンは、入力欄を選んでから `adb shell input text '<token>'` で入れると楽です。
-
-## キオスク側の準備
-
-miharashi の `/etc/miharashi/config.toml` に `[panel]` を書きます。待ち受けは LAN のインターフェースの IP だけにします。
-
-```toml
-[panel]
-enabled = true
-listen = "192.168.0.132:8790"
-token_file = "/etc/miharashi/panel.token"
-```
-
-## 構成
-
-| 部品 | 役割 |
-|---|---|
-| `PanelActivity` | 全画面、常時点灯、横固定。onResume で同期を始め、onPause で止める |
-| `PanelView` / `PanelLayout` | Canvas での描画とタップの判定。960×480 を基準に拡大・縮小する |
-| `KioskClient` | `/status`、`/events`(SSE)、`/input`。`HttpURLConnection` だけを使う |
-| `KioskSync` | 5 秒ごとの `/status` と SSE の再接続。結果を UI スレッドへ渡す |
-| `PanelState` | `/status` を写した不変オブジェクトと鮮度 |
-| `Settings` / `SettingsActivity` | ホストの URL とトークン(SharedPreferences) |
-| `BootReceiver` | `BOOT_COMPLETED` と `MY_PACKAGE_REPLACED` で前面に出す |
-
-実行時の依存ライブラリはありません(Kotlin 標準ライブラリだけ)。
+ビルドと端末への導入は [使い方](docs/USAGE.md)、アプリの構成は [技術設計](docs/DESIGN.md) にまとめています。文書の一覧と確認状況は [Docs](docs/README.md)、紹介ページの更新と公開手順は [LP の管理](docs/LP.md) を参照してください。

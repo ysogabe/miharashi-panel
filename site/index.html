@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07131c">
+  <meta name="description" content="Miharashi Panel。Android 化した Echo Show 5 で動く Miharashi 専用の操作盤アプリ。画面の切り替え、メニューからの画面選択、自動巡回の固定・再開、モニターの消灯・点灯を手元で操作できます。">
+  <title>Miharashi Panel — 手元の小さな画面から、モニターを操作する。</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="shots.css">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <a class="skip-link" href="#preview">パネルの画面へ移動</a>
+  <header class="shell topbar">
+    <a class="brand" href="https://ysogabe.github.io/miharashi/" aria-label="Miharashi トップへ"><span class="brand-symbol" aria-hidden="true">▥</span>Miharashi<span class="brand-sub">PANEL</span></a>
+    <nav aria-label="ページ内ナビゲーション"><a href="#preview">パネル</a><a href="#transport">接続方式</a><a href="#how">仕組み</a><a href="#phases">段階</a><a href="#faq">FAQ</a></nav>
+    <span class="stage-label"><span aria-hidden="true"></span>実機で稼働中</span>
+  </header>
+
+  <main id="top">
+    <section class="shell hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">A control panel on your desk</p>
+        <h1 id="hero-title">手元の小さな画面から、<br><span>モニターを操作する。</span></h1>
+        <p class="hero-lead">Android 化した Echo Show 5(960×480)を、Miharashi 専用の操作盤に。<br class="wide-only">画面の選択、自動巡回の停止、モニターの消灯。大きなボタンで手元から操作できます。</p>
+        <div class="hero-actions"><a class="button primary" href="#preview">実際の画面を見る <span aria-hidden="true">↘</span></a><a class="text-link" href="https://github.com/ysogabe/miharashi-panel">アプリのソース <span aria-hidden="true">→</span></a></div>
+        <p class="hero-status">このページの画面は、Echo Show 5 実機のスクリーンショットです。</p>
+      </div>
+      <aside class="hero-note" aria-label="パネルの特徴">
+        <div class="note-heading"><span class="micro-label">WHAT IT DOES</span><span class="tiny-square" aria-hidden="true"></span></div>
+        <div class="note-item"><span class="note-index">01</span><div><strong>何のボタンか、ひと目でわかる</strong><p>アイコンと説明文で案内します。表示中の画面に合わせて、ボタンの説明も変わります。</p></div></div>
+        <div class="note-item"><span class="note-index">02</span><div><strong>モニターの消灯・点灯</strong><p>Home Assistant と連動し、点灯・消灯・自動を切り替えられます。</p></div></div>
+        <div class="note-item"><span class="note-index">03</span><div><strong>好きな画面で固定</strong><p>現在の画面をタップすると自動巡回を停止し、もう一度タップすると再開します。</p></div></div>
+        <p class="note-disclaimer">表示中の画面や巡回の状態は、Miharashi 本体から取得して表示します。</p>
+      </aside>
+    </section>
+
+    <section class="shell section-block" id="preview" aria-labelledby="preview-title">
+      <div class="section-heading"><div><p class="eyebrow">01 / Panel</p><h2 id="preview-title">960×480 の画面に、<br class="mobile-only">押しやすいボタンだけ。</h2></div><p class="section-aside">画面の切り替えも、巡回の固定も。<br>メニューから画面を直接選べます。</p></div>
+      <figure class="shot shot-main">
+        <img src="images/panel-v020.png" width="960" height="480" alt="Echo Show 5 の操作パネル。左にモニターの状態と消灯・点灯・自動・設定、中央に現在の画面と固定中の表示、その下に前の画面・決定・次の画面、右に項目移動とメニューのボタン">
+        <figcaption><span><strong>Miharashi Panel</strong> Echo Show 5 の実機のスクリーンショット(960×480)</span><span>v0.2.0</span></figcaption>
+      </figure>
+      <div class="feature-grid">
+        <article class="feature"><span class="micro-label">LEFT</span><h3>モニターの消灯・点灯・自動</h3><p>現在の状態(点灯中・消灯中)と、Home Assistant の切り替え設定(自動 / 常に点灯 / 常に消灯)を表示します。画面操作用のボタンとは離して、左側に縦に並べています。</p></article>
+        <article class="feature"><span class="micro-label">CENTER</span><h3>押した結果が、手元に戻る</h3><p>表示中の画面名、ページ番号、写真が何枚目かを本体から取得します。情報が 5 秒を超えて更新されなければ STALE、15 秒を超えると OFFLINE と表示します。</p></article>
+        <article class="feature"><span class="micro-label">BUTTONS</span><h3>ボタンの説明が画面に合わせて変わる</h3><p>写真の画面なら「前の写真・次の写真」、メニューを開くと「上を選ぶ・移動・閉じる」。今使えないボタンは灰色になり、押しても操作を送信しません。</p></article>
+        <article class="feature"><span class="micro-label">MENU</span><h3>一覧から、見たい画面へ</h3><p>右下の「メニュー」を押すと、中央に画面の一覧を表示します。項目をタップするだけで、その画面に切り替わります。</p></article>
+        <article class="feature"><span class="micro-label">ROTATION</span><h3>自動巡回を止めて、今の画面で固定</h3><p>中央の画面表示部をタップすると、巡回を止めて固定します。固定中は青い枠と「固定」の表示が目印です。もう一度タップすると、次の画面へ進んで巡回を再開します。操作によって一時停止したときは、再開までの残り時間も表示します。</p></article>
+        <article class="feature"><span class="micro-label">FEEDBACK</span><h3>音と振動、失敗は赤く</h3><p>操作が本体に届くと、音と振動で知らせます。送信に失敗したときはボタンが赤く点滅し、自動で再送することはありません。</p></article>
+        <article class="feature"><span class="micro-label">HEADER</span><h3>API と Wi-Fi の点灯</h3><p>本体との通信状態と Wi-Fi の接続状態を表示します。通信が切れても自動で再接続を試みます。</p></article>
+        <article class="feature"><span class="micro-label">SLEEP</span><h3>触らなければ消灯</h3><p>操作盤に 3 分間触れなければ、画面を真っ黒にしてバックライトを最小にします。画面に触れると元の明るさに戻り、最初のタッチではボタンは動作しません。焼き付きや残像を防ぐための仕様です。</p></article>
+        <article class="feature"><span class="micro-label">BOOT</span><h3>電源を入れれば操作盤</h3><p>端末の起動時やアプリの更新時に、自動で前面に表示されます。スワイプのみのロック画面よりも手前に出ます。</p></article>
+      </div>
+      <p class="shot-note">巡回の固定・再開には、本体で自動巡回を有効にし、巡回操作に対応したバージョンを使う必要があります。モニターの操作には Home Assistant との連携が必要です。</p>
+    </section>
+
+    <section class="operation-section transport-section" id="transport" aria-labelledby="transport-title">
+      <div class="shell">
+        <div class="section-heading"><div><p class="eyebrow">02 / Transport</p><h2 id="transport-title">BLE キーボードか、<br class="mobile-only">ネットワーク API か。</h2></div><p class="section-aside">同じ条件で並べて比べ、<br>ネットワーク API を選びました。</p></div>
+        <div class="transport-grid">
+          <article class="transport-card">
+            <div class="transport-head"><span class="micro-label">A</span><h3>Bluetooth キーボード方式</h3><span class="transport-tag">比較した方式</span></div>
+            <ul><li>キーボードとして操作を送る方式です。</li><li>今回の Echo Show 5 では、OS 側の変更や接続の管理が必要になります。</li><li>キーボードの操作を送るだけでは、表示中の画面や巡回の状態を手元で確認できません。</li></ul>
+          </article>
+          <article class="transport-card is-chosen">
+            <div class="transport-head"><span class="micro-label">B</span><h3>Wi-Fi 経由の API</h3><span class="transport-tag chosen">採用</span></div>
+            <ul><li>Android 化した端末に、通常のアプリとして追加できます。</li><li>操作を送るだけでなく、本体の状態も受け取れます。</li><li>本体と同じ LAN に接続し、URL と認証用トークンを設定して使います。</li></ul>
+          </article>
+        </div>
+        <p class="scope-note">手元で本体の状態を確認できることと、アプリの導入や更新が簡単なことから、Wi-Fi 経由の API を選びました。詳しい比較は設計書にまとめています。</p>
+      </div>
+    </section>
+
+
+    <section class="shell how-section" id="how" aria-labelledby="how-title">
+      <div class="section-heading"><div><p class="eyebrow">03 / How it connects</p><h2 id="how-title">操作は手元から。<br class="mobile-only">画面の切り替えは本体で。</h2></div></div>
+      <div class="how-grid">
+        <div class="how-flow" aria-label="接続の流れ">
+          <div class="how-node"><span class="micro-label">ECHO SHOW 5</span><strong>単体アプリ miharashi-panel</strong><span>操作を送り、現在の画面や巡回の状態を表示</span></div>
+          <div class="how-arrow" aria-hidden="true">LAN 内の HTTP API<br>操作の送信と状態の取得</div>
+          <div class="how-node accent"><span class="micro-label">MIHARASHI</span><strong>panel スレッド</strong><span>Bearer トークン、レート制限、LAN のインターフェースだけで待ち受け</span></div>
+          <div class="how-arrow" aria-hidden="true">キー操作・画面選択・巡回の切り替え</div>
+          <div class="how-node"><span class="micro-label">RUNTIME</span><strong>実行ループ</strong><span>画面の切り替えや巡回の停止・再開を反映</span></div>
+          <div class="how-arrow" aria-hidden="true">input_select.select_option</div>
+          <div class="how-node"><span class="micro-label">HOME ASSISTANT</span><strong>モニターの手動切り替え</strong><span>auto / force_on / force_off。キオスクがすぐに読み直して反映</span></div>
+        </div>
+        <div class="how-copy">
+          <article><span class="micro-label">API</span><h3>操作と状態取得の API</h3><dl class="api-list"><dt>GET /api/v1/status</dt><dd>画面名・一覧、ボタンの説明、巡回とモニターの状態</dd><dt>POST /api/v1/input</dt><dd>prev / next / select / up / down / menu の 6 種類の操作</dd><dt>POST /api/v1/screen</dt><dd>一覧から指定した画面へ移動</dd><dt>POST /api/v1/rotation</dt><dd>自動巡回を停止・再開</dd><dt>POST /api/v1/display</dt><dd>モニターを auto / force_on / force_off に</dd><dt>GET /api/v1/events</dt><dd>状態の変更を本体から通知(SSE)</dd><dt>GET /api/v1/healthz</dt><dd>認証なしの生存確認だけ</dd></dl></article>
+          <article><span class="micro-label">SAFETY</span><h3>キオスクはコマンドを実行しない</h3><p>API でできるのは、キー操作、画面選択、巡回とモニターの切り替え、状態の取得だけです。設定で有効にしない限り待ち受けは開始せず、0.0.0.0 は指定できません。パネルの通信が途切れても、キオスクには影響しません。</p></article>
+          <article><span class="micro-label">APP</span><h3>普通のアプリで、別のリポジトリに</h3><p>priv-app にせず、ROM も変更しません。Kotlin で書いた依存ライブラリのない小さなアプリで、ソースコードは miharashi-panel にあります。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell scope-section" id="phases" aria-labelledby="phases-title">
+      <div class="section-heading"><div><p class="eyebrow">04 / Phases</p><h2 id="phases-title">画面選択と巡回の操作まで、<br class="mobile-only">手元で使えます。</h2></div><p class="section-aside">v0.2.0 を実機で使用中。<br>画面選択と巡回操作に対応しています。</p></div>
+      <ol class="roadmap panel-roadmap four">
+        <li class="done"><span class="roadmap-step">P0</span><div><span class="roadmap-state">完了</span><h3>設計と LP</h3><p>接続方式の比較、API 案、パネル画面案、単体アプリの振る舞い。</p></div></li>
+        <li class="done"><span class="roadmap-step">P1</span><div><span class="roadmap-state">完了</span><h3>panel API(既定 OFF)</h3><p>キーの注入、/status、SSE、トークン、レート制限。LAN の別の端末から curl で確認。</p></div></li>
+        <li class="done"><span class="roadmap-step">P2</span><div><span class="roadmap-state">完了</span><h3>単体アプリ</h3><p>画面の切り替え、現在の画面の表示、自動起動。モニターの操作と操作盤の自動消灯にも対応。</p></div></li>
+        <li class="done"><span class="roadmap-step">✓</span><div><span class="roadmap-state">対応済み</span><h3>画面選択と自動巡回</h3><p>項目移動、メニューからの画面選択、画面に応じたボタンの説明、巡回の固定・再開。</p></div></li>
+      </ol>
+      <p class="scope-note">夜間の時刻に応じた減光は作らず、触らなければ操作盤を暗くする自動消灯で代替します。</p>
+    </section>
+
+    <section class="faq-section" id="faq" aria-labelledby="faq-title"><div class="shell faq-grid"><div class="faq-intro"><p class="eyebrow">05 / FAQ</p><h2 id="faq-title">よくある質問</h2><p>作っている側が、<br>聞かれそうだと思った質問です。</p></div><div class="faq-list">
+      <details><summary>なぜ Echo Show 5 なのですか？</summary><p>960×480 の横長画面が机に置く操作盤にちょうどよく、Android 化すれば普通のアプリが動くからです。Miharashi 専用の単体アプリとして全画面で使い、ほかの用途との併用は想定していません。</p></details>
+      <details><summary>BLE キーボードにしなかったのはなぜですか？</summary><p>Miharashi 側の変更が不要という利点はあります。しかし Echo を BLE 周辺機器にするには、ROM の変更(priv-app、feature 宣言)や署名鍵の管理が必要で、更新後にペアリングをやり直す必要が生じる可能性があります。手元で状態を確認することもできません。設計書の付録に「もし実装するなら何が必要か」をまとめています。</p></details>
+      <details><summary>モニターの消灯は、キオスクの中だけで切り替えないのですか？</summary><p>キオスクの中だけでは切り替えません。キオスクが Home Assistant の設定項目(input_select)を書き換えます。こうすることで Home Assistant の画面とパネルの表示が一致し、再起動しても設定が保たれます。</p></details>
+      <details><summary>キオスクに API を追加しても安全ですか？</summary><p>初期設定では無効で、有効にする場合も Bearer トークンと LAN 内の 1 つのインターフェースだけに制限されます。キー操作、画面選択、巡回とモニターの切り替え、状態の取得だけに用途を限定しており、任意のコマンドは実行しません。</p></details>
+      <details><summary>Echo の Wi-Fi が切れたらどうなりますか？</summary><p>最後の更新から 5 秒を超えると STALE、15 秒を超えると OFFLINE と表示します。最後の状態を薄く残したまま、再接続を試み続けます。キオスク側の動作には影響しません。</p></details>
+      <details><summary>Echo が再起動したらどうなりますか？</summary><p>端末の起動時に自動で前面に出て、/status を再取得します。再接続が完了すると、本体の現在の状態を表示します。</p></details>
+      <details><summary>操作盤の画面が焼き付きませんか？</summary><p>操作盤に 3 分間触れなければ画面を真っ黒にして、バックライトを最小にします。この時間は設定で変更でき、0 に設定すれば消灯しません。</p></details>
+      <details><summary>スマホのブラウザーからも操作できますか？</summary><p>同じ API を利用するため、ブラウザー向けの小さな操作ページを作ることも可能です。現在は Echo 向けのアプリのみを提供しています。</p></details>
+    </div></div></section>
+
+    <section class="shell docs-section" aria-labelledby="docs-title"><div><p class="eyebrow">Read more</p><h2 id="docs-title">ソースと設計書は、ここから。</h2><p>接続方式の比較、API、パネル画面、単体アプリの振る舞い、段階と未検証事項をまとめています。</p></div><div class="doc-links"><a href="https://github.com/ysogabe/miharashi-panel"><span>01 / PANEL APP</span><strong>パネルアプリのソース <span aria-hidden="true">↗</span></strong></a><a href="https://github.com/ysogabe/miharashi/blob/main/docs/panel/DESIGN.md"><span>02 / PANEL DESIGN</span><strong>操作パネルの設計 <span aria-hidden="true">↗</span></strong></a><a href="https://ysogabe.github.io/miharashi/"><span>03 / PRODUCT</span><strong>Miharashi の LP <span aria-hidden="true">↗</span></strong></a></div></section>
+  </main>
+  <footer class="shell footer"><span>Miharashi Panel <span class="footer-separator">/</span> Echo Show 5 Control Panel</span><span>v0.2.0 · 2026.10.16</span></footer>
+</body>
+</html>
