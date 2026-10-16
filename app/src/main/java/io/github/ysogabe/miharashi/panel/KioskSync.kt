@@ -87,7 +87,7 @@ class KioskSync(
     }
 
     /**
-     * キー(`/input`)、画面の選択(`/screen`)、モニターの切り替え(`/display`)を送る。結果(成功なら null、失敗なら理由)を UI スレッドで返す。
+     * キー(`/input`)、画面の選択(`/screen`)、モニターの切り替え(`/display`)、巡回の停止・再開(`/rotation`)を送る。結果(成功なら null、失敗なら理由)を UI スレッドで返す。
      * 失敗しても再送しない(二重送信を避ける)。成功したら、SSE を待たずに `/status` を読み直して表示を早く追従させる。
      */
     fun send(action: Action, done: (String?) -> Unit) {
@@ -98,6 +98,7 @@ class KioskSync(
                     is Action.Key -> client.input(action.name)
                     is Action.Display -> client.display(action.mode)
                     is Action.Screen -> client.screen(action.id)
+                    is Action.Rotation -> client.rotation(action.mode)
                     Action.Settings -> Unit
                 }
                 null

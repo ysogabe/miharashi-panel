@@ -23,6 +23,9 @@ sealed interface Action {
     /** `/api/v1/screen` でその画面へ移る(メニューの行をタップしたとき) */
     data class Screen(val id: String) : Action
 
+    /** `/api/v1/rotation` でキオスクの自動巡回を止めたままにする(off)・再開する(on)。巡回の行をタップしたとき */
+    data class Rotation(val mode: String) : Action
+
     /** 設定画面を開く */
     data object Settings : Action
 }
@@ -87,6 +90,13 @@ class PanelLayout(val width: Float, val height: Float) {
     val buttons = mainKeys + sideKeys + displayKeys + settings
 
     fun hit(x: Float, y: Float): Button? = buttons.firstOrNull { it.box.contains(x, y) }
+
+    /**
+     * キオスクの自動巡回の行(中央の、前の画面・決定・次の画面の上)。左に状態、右に「止める」「再開」。
+     * 押すかどうかは巡回の状態で変わるので、`buttons` には入れず PanelView が判定する。
+     * メニューを開いているあいだは出さない(一覧の行と重なる)
+     */
+    val rotationRow = box(216f, 204f, 704f, 252f)
 
     /** キオスクのメニューが開いているあいだ、画面の一覧を出す場所(中央の、キーのボタンより上) */
     val menuArea = box(216f, 64f, 704f, 236f)

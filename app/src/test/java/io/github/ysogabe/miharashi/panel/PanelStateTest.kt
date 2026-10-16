@@ -69,17 +69,37 @@ class PanelStateTest {
     @Test
     fun parsesRotationState() {
         assertNull("rotation を返さない古いキオスク", KioskStatus.parse(fixture("status-five-screens.json")).rotation)
-        assertEquals(RotationInfo(paused = false, resumeInS = null), KioskStatus.parse(fixture("status-rotation-on.json")).rotation)
+        assertEquals(RotationInfo(RotationState.ON), KioskStatus.parse(fixture("status-rotation-on.json")).rotation)
         val paused = KioskStatus.parse(fixture("status-rotation-paused.json"))
-        assertEquals(RotationInfo(paused = true, resumeInS = 298), paused.rotation)
+        assertEquals(RotationInfo(RotationState.PAUSED, resumeInS = 298), paused.rotation)
         assertEquals("止めたキーで次の画面へ移っている", "room", paused.currentScreen?.id)
         assertNull("巡回が無効", KioskStatus.parse(withRotation("null")).rotation)
         assertEquals(
             "resume_in_s が無くても止まっていることは出す",
-            RotationInfo(paused = true, resumeInS = null),
+            RotationInfo(RotationState.PAUSED, resumeInS = null),
             KioskStatus.parse(withRotation("""{"state":"paused"}""")).rotation,
         )
         assertNull("知らない state", KioskStatus.parse(withRotation("""{"state":"warming"}""")).rotation)
+    }
+
+    /** パネルから止めたまま(miharashi #57)。キオスクが control を返さなければ止められない */
+    @Test
+    fun parsesRotationStopAndControl() {
+        assertFalse("control を返さない古いキオスク", KioskStatus.parse(fixture("status-rotation-on.json")).rotation!!.control)
+        assertEquals(
+            RotationInfo(RotationState.ON, control = true),
+            KioskStatus.parse(withRotation("""{"control":true,"resume_in_s":null,"state":"on"}""")).rotation,
+        )
+        val off = KioskStatus.parse(withRotation("""{"control":true,"resume_in_s":null,"state":"off"}""")).rotation!!
+        assertEquals(RotationInfo(RotationState.OFF, control = true), off)
+        assertFalse("止めたままは一時停止ではない", off.paused)
+        assertEquals(
+            "止めたままなら残りの秒数は読まない",
+            RotationInfo(RotationState.OFF, control = true),
+            KioskStatus.parse(withRotation("""{"control":true,"resume_in_s":120,"state":"off"}""")).rotation,
+        )
+        val st = PanelState().withStatus(KioskStatus.parse(withRotation("""{"control":true,"state":"off"}""")), 10_000)
+        assertNull("止めたままなら数え下げない", st.rotationResumeInS(10_000))
     }
 
     @Test
@@ -90,7 +110,7 @@ class PanelStateTest {
         assertEquals("切り上げ", 297L, st.rotationResumeInS(11_500))
         assertEquals(1L, st.rotationResumeInS(307_999))
         assertEquals("過ぎても 0 未満にしない", 0L, st.rotationResumeInS(320_000))
-        val extended = st.withStatus(paused.copy(rotation = RotationInfo(paused = true, resumeInS = 300)), nowMs = 20_000)
+        val extended = st.withStatus(paused.copy(rotation = RotationInfo(RotationState.PAUSED, resumeInS = 300)), nowMs = 20_000)
         assertEquals("新しい状態が届いたら、そこから数え直す", 300L, extended.rotationResumeInS(20_000))
 
         val on = KioskStatus.parse(fixture("status-rotation-on.json"))

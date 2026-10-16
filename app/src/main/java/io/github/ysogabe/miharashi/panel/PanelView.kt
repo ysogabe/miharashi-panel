@@ -229,25 +229,50 @@ class PanelView(
 
     /**
      * キオスクの自動巡回(エラーの行と、前の画面・決定・次の画面のあいだ)。止まっていれば、戻るまでの残りを毎秒数え下げる。
-     * 巡回が無効なキオスクでは出さない
+     * 巡回が無効なキオスクでは出さない。キオスクが止められると言っていれば(miharashi #57)、行ごと押せるボタンにし、
+     * 右に押すと何が起きるか(止める / 再開)を出す
      */
     private fun drawRotation(c: Canvas, r: RotationInfo, now: Long, dim: Boolean) {
-        val ctr = layout.center
-        val y = ctr.top + dp(176f)
-        val (s, color) = if (r.paused) {
-            // キオスクもパネルも切り上げるので、0 になってから戻るまで 1 秒ほどかかる
-            val left = when (val secs = state.rotationResumeInS(now)) {
-                null -> ""
-                0L -> "  まもなく再開"
-                else -> "  あと ${formatMinSec(secs)} で再開"
+        val row = layout.rotationRow
+        val tappable = rotationTappable()
+        if (tappable) {
+            val bg = when {
+                (failedUntil[ROTATION_ID] ?: 0) > now -> NG_DIM
+                pressed == ROTATION_ID -> ACCENT
+                else -> KEY
             }
-            "巡回停止中$left" to WARN
-        } else {
-            "自動巡回中" to OK
+            roundRect(c, row, bg, 10f)
         }
-        dot(c, ctr.left + dp(30f), y - dp(7f), if (dim) MUTED else color)
-        label(c, s, ctr.left + dp(44f), y, 20f, if (dim) MUTED else FG, bold)
+        val y = row.centerY + dp(7f)
+        val (s, color) = when (r.state) {
+            RotationState.PAUSED -> {
+                // キオスクもパネルも切り上げるので、0 になってから戻るまで 1 秒ほどかかる
+                val left = when (val secs = state.rotationResumeInS(now)) {
+                    null -> ""
+                    0L -> "  まもなく再開"
+                    else -> "  あと ${formatMinSec(secs)} で再開"
+                }
+                "巡回停止中$left" to WARN
+            }
+            RotationState.OFF -> "巡回を止めています" to MUTED
+            RotationState.ON -> "自動巡回中" to OK
+        }
+        dot(c, row.left + dp(14f), y - dp(7f), if (dim) MUTED else color)
+        label(c, s, row.left + dp(28f), y, 20f, if (dim) MUTED else FG, bold)
+        if (tappable) {
+            val action = if (r.state == RotationState.OFF) "再開" else "止める"
+            label(c, action, row.right - dp(16f), y, 20f, if (dim) MUTED else FG, bold, Paint.Align.RIGHT)
+        }
     }
+
+    /** 巡回の行が出ていて、押せるか(キオスクが `/api/v1/rotation` を受け付ける。メニュー中は行を出さない) */
+    private fun rotationTappable(): Boolean {
+        val s = state.status ?: return false
+        return configured && s.menu == null && s.rotation?.control == true
+    }
+
+    /** (x, y) が押せる巡回の行の上か */
+    private fun hitRotation(x: Float, y: Float): Boolean = rotationTappable() && layout.rotationRow.contains(x, y)
 
     /**
      * キオスクのメニュー(miharashi #49)。画面の一覧を出し、選んでいる行を強調する。表示中の画面には「表示中」。
@@ -302,6 +327,7 @@ class PanelView(
         is Action.Key -> b.enabled && configured && labelOf(b) != null
         is Action.Display -> configured && state.status?.display?.control == true
         is Action.Screen -> configured
+        is Action.Rotation -> rotationTappable()
     }
 
     private fun dot(c: Canvas, x: Float, y: Float, color: Int) {
@@ -394,7 +420,9 @@ class PanelView(
         }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                pressed = layout.hit(e.x, e.y)?.id ?: hitMenu(e.x, e.y)?.let(::menuRowId)
+                pressed = layout.hit(e.x, e.y)?.id
+                    ?: hitMenu(e.x, e.y)?.let(::menuRowId)
+                    ?: ROTATION_ID.takeIf { hitRotation(e.x, e.y) }
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
@@ -406,6 +434,7 @@ class PanelView(
                 when {
                     b != null && b.id == id -> tap(b)
                     row != null && menuRowId(row) == id -> tapMenu(row)
+                    id == ROTATION_ID && hitRotation(e.x, e.y) -> tapRotation()
                 }
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -433,6 +462,12 @@ class PanelView(
         send(Action.Screen(screen.id), menuRowId(i))
     }
 
+    /** 巡回の行: 止めたままなら再開し、回っているか一時停止中なら止めたままにする(miharashi #57) */
+    private fun tapRotation() {
+        val r = state.status?.rotation ?: return
+        send(Action.Rotation(if (r.state == RotationState.OFF) "on" else "off"), ROTATION_ID)
+    }
+
     /** タップで即送る。204 で押下音と触覚。失敗したら `failId` の場所を赤く点滅させ、再送しない(設計書 §5.6) */
     private fun send(action: Action, failId: String) {
         onAction(action) { err ->
@@ -451,6 +486,7 @@ class PanelView(
 
     companion object {
         const val FAIL_FLASH_MS = 800L
+        private const val ROTATION_ID = "rotation"
         private val BG = Color.rgb(8, 11, 16)
         private val PANEL = Color.rgb(20, 26, 34)
         private val KEY = Color.rgb(32, 42, 56)
