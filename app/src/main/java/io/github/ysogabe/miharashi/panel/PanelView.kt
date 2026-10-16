@@ -252,8 +252,14 @@ class PanelView(
         val badgeW = dp(88f)
         if (fixed) {
             val badge = Box(card.right - dp(16f) - badgeW, card.top + dp(16f), card.right - dp(16f), card.top + dp(52f))
-            roundRect(c, badge, if (dim) MUTED else ACCENT, 18f)
-            label(c, "固定", badge.centerX, badge.centerY + dp(7f), 20f, BG, bold, Paint.Align.CENTER)
+            // 押しているあいだはカードが青くなるので、札は暗い青にして消えないようにする
+            val badgeColor = when {
+                dim -> MUTED
+                tappable && pressed == ROTATION_ID -> ACCENT_DIM
+                else -> ACCENT
+            }
+            roundRect(c, badge, badgeColor, 18f)
+            label(c, "固定", badge.centerX, badge.centerY + dp(7f), 20f, if (badgeColor == ACCENT_DIM) FG else BG, bold, Paint.Align.CENTER)
         }
         val cur = status.currentScreen
         val idx = status.current?.let { "%02d ".format(it + 1) } ?: ""
