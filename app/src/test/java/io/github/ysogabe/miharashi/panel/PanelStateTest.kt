@@ -90,15 +90,18 @@ class PanelStateTest {
             RotationInfo(RotationState.ON, control = true),
             KioskStatus.parse(withRotation("""{"control":true,"resume_in_s":null,"state":"on"}""")).rotation,
         )
-        val off = KioskStatus.parse(withRotation("""{"control":true,"resume_in_s":null,"state":"off"}""")).rotation!!
+        // パネルの「止める」(POST /api/v1/rotation {"mode":"off"})の直後の実機の /status(2026-10-16)
+        val stopped = KioskStatus.parse(fixture("status-rotation-off.json"))
+        val off = stopped.rotation!!
         assertEquals(RotationInfo(RotationState.OFF, control = true), off)
         assertFalse("止めたままは一時停止ではない", off.paused)
+        assertEquals("photo", stopped.currentScreen?.id)
         assertEquals(
             "止めたままなら残りの秒数は読まない",
             RotationInfo(RotationState.OFF, control = true),
             KioskStatus.parse(withRotation("""{"control":true,"resume_in_s":120,"state":"off"}""")).rotation,
         )
-        val st = PanelState().withStatus(KioskStatus.parse(withRotation("""{"control":true,"state":"off"}""")), 10_000)
+        val st = PanelState().withStatus(stopped, 10_000)
         assertNull("止めたままなら数え下げない", st.rotationResumeInS(10_000))
     }
 
