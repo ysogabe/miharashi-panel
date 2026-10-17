@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.SystemClock
@@ -13,9 +14,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.SoundEffectConstants
 import android.view.View
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.TimeZone
 
 /**
  * 操作盤の描画とタップの判定(設計書 §5.4)。View と Canvas だけで描く。
@@ -29,29 +28,30 @@ class PanelView(
     private val onSettings: () -> Unit,
 ) : View(context) {
 
+    // 待機時計のあいだは操作盤が見えないので、状態が変わるたびには描き直さない(復帰時は updateSleep が描き直す)
     var state = PanelState()
         set(value) {
             field = value
-            invalidate()
+            if (!sleeping) invalidate()
         }
 
     /** 設定(ホストとトークン)が入っているか */
     var configured = false
         set(value) {
             field = value
-            invalidate()
+            if (!sleeping) invalidate()
         }
 
     var wifi = false
         set(value) {
             field = value
-            invalidate()
+            if (!sleeping) invalidate()
         }
 
-    /** 消灯した・点灯したときに呼ぶ(Activity がバックライトを絞る・戻す) */
+    /** 待機時計に入った・操作盤に戻ったときに呼ぶ(Activity がバックライトを絞る・戻す) */
     var onSleepChanged: (Boolean) -> Unit = {}
 
-    /** 触らずにこの時間が過ぎたら消灯する。0 なら消灯しない。設定するとその時点から数え直す */
+    /** 触らずにこの時間が過ぎたら待機時計にする。0 なら出さない。設定するとその時点から数え直す */
     var sleepTimeoutMs = 0L
         set(value) {
             field = value
@@ -60,10 +60,18 @@ class PanelView(
         }
 
     private var idle = IdleTimer(0, SystemClock.elapsedRealtime())
+
+    /** 待機時計を出している */
     private var sleeping = false
 
-    /** 消灯中に触った指が離れるまで、その操作をボタンに渡さない */
+    /** 待機時計から戻るのに使った指が離れるまで、その操作をボタンに渡さない */
     private var swallowing = false
+
+    /** Activity が前面にいるか。背面のあいだは描画の更新もアニメーションの予約もしない */
+    private var foregroundActive = true
+
+    private val flipClock = FlipClockModel()
+    private var clockLayout = ClockLayout(PanelLayout.BASE_W, PanelLayout.BASE_H)
 
     private var layout = PanelLayout(PanelLayout.BASE_W, PanelLayout.BASE_H)
     private var pressed: String? = null
@@ -72,20 +80,47 @@ class PanelView(
     private val failedUntil = mutableMapOf<String, Long>()
     private var lastError: String? = null
 
-    private val clock = SimpleDateFormat("HH:mm", Locale.JAPAN)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT }
     private val bold = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
     private val rect = RectF()
+    private val textBounds = Rect()
     private val path = Path()
 
+    /** 操作盤の秒ごとの更新と、待機時計の低頻度の更新(動き・濃淡・分の境目)。次の予約は `scheduleTick` */
     private val ticker = object : Runnable {
         override fun run() {
             updateSleep()
-            if (!sleeping) invalidate()
-            postDelayed(this, 1_000)
+            invalidate()
+            scheduleTick()
         }
+    }
+
+    /** フリップ中だけ、次の画面の更新に合わせて描き直す。`onDraw` がフリップ中なら予約し、終われば `ticker` の低頻度の更新だけになる */
+    private val flipFrame = Runnable { if (running() && sleeping) invalidate() }
+
+    private fun running() = foregroundActive && isAttachedToWindow
+
+    private fun scheduleTick() {
+        removeCallbacks(ticker)
+        if (!running()) return
+        val delay = if (sleeping) ClockSchedule.idleDelayMs(System.currentTimeMillis(), tzOffsetMs()) else 1_000L
+        postDelayed(ticker, delay)
+    }
+
+    private fun stopUpdates() {
+        removeCallbacks(ticker)
+        removeCallbacks(flipFrame)
+    }
+
+    private fun tzOffsetMs(epochMs: Long = System.currentTimeMillis()) = TimeZone.getDefault().getOffset(epochMs).toLong()
+
+    /** 時計の状態を今の時刻に合わせる。フリップ中なら true */
+    private fun syncClock(mono: Long): Boolean {
+        val epoch = System.currentTimeMillis()
+        flipClock.update(epoch, tzOffsetMs(epoch), mono)
+        return flipClock.isFlipping(mono)
     }
 
     private fun updateSleep() {
@@ -93,28 +128,54 @@ class PanelView(
         if (s == sleeping) return
         sleeping = s
         pressed = null
+        // 待機に入った直後・操作盤へ戻った直後は、時刻を直接出す(連続フリップにしない)
+        flipClock.reset()
+        removeCallbacks(flipFrame)
         invalidate()
         onSleepChanged(s)
+        scheduleTick()
     }
 
-    /** 触ったのと同じに扱い、消灯していれば点ける(Activity に戻ったときなど) */
+    /** 触ったのと同じに扱い、待機時計を出していれば操作盤に戻す(Activity に戻ったときなど) */
     fun wake() {
         idle.touch(SystemClock.elapsedRealtime())
         updateSleep()
     }
 
+    /**
+     * Activity が前面か。onResume で true、onPause で false。
+     * true は前面への復帰: 操作盤に戻して無操作時間を数え直し、時計は現在時刻から出し直す。
+     * false は背面: 描画の更新とフリップの予約をすべて止める
+     */
+    fun setForegroundActive(active: Boolean) {
+        foregroundActive = active
+        pressed = null
+        swallowing = false
+        flipClock.reset()
+        if (!active) {
+            stopUpdates()
+            return
+        }
+        idle.touch(SystemClock.elapsedRealtime())
+        updateSleep()
+        invalidate()
+        scheduleTick()
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        post(ticker)
+        flipClock.reset()
+        scheduleTick()
     }
 
     override fun onDetachedFromWindow() {
-        removeCallbacks(ticker)
+        stopUpdates()
         super.onDetachedFromWindow()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         layout = PanelLayout(w.toFloat(), h.toFloat())
+        clockLayout = ClockLayout(w.toFloat(), h.toFloat())
     }
 
     private fun dp(v: Float) = v * layout.scale
@@ -142,12 +203,11 @@ class PanelView(
     }
 
     override fun onDraw(c: Canvas) {
+        val now = SystemClock.elapsedRealtime()
         if (sleeping) {
-            // 消灯中は真っ黒にする(バックライトは Activity が最小にする)
-            c.drawColor(Color.BLACK)
+            drawFlipClock(c, now)
             return
         }
-        val now = SystemClock.elapsedRealtime()
         val fresh = state.freshness(now)
         val status = state.status
         c.drawColor(BG)
@@ -172,7 +232,7 @@ class PanelView(
         label(c, apiLabel, h.left + dp(484f), baseY, 18f, FG, bold)
         dot(c, h.left + dp(610f), h.centerY, if (wifi) OK else NG)
         label(c, "WIFI", h.left + dp(624f), baseY, 18f, FG, bold)
-        label(c, clock.format(Date()), h.right - dp(20f), baseY, 26f, FG, bold, Paint.Align.RIGHT)
+        label(c, ClockMath.format(ClockMath.minuteOfDay(System.currentTimeMillis(), tzOffsetMs())), h.right - dp(20f), baseY, 26f, FG, bold, Paint.Align.RIGHT)
 
         // 左のレール: キオスクのモニターの状態と 消灯 / 点灯 / 自動、いちばん下に設定。
         // 現在の画面は中央に大きく出すので、画面一覧は置かない(直接遷移ができるまで)
@@ -208,6 +268,82 @@ class PanelView(
         layout.mainKeys.forEach { drawButton(c, it, now) }
         layout.sideKeys.forEach { drawButton(c, it, now) }
     }
+
+    /**
+     * 待機時計。黒い背景に、暗いカードとグレーの数字。変わった桁だけ上半分が倒れて下半分が落ちる。
+     * 時計全体と濃淡は単調な時計からゆっくり変える。フリップ中だけ次のフレームを予約する
+     */
+    private fun drawFlipClock(c: Canvas, now: Long) {
+        val flipping = syncClock(now)
+        c.drawColor(CLOCK_BG)
+        val k = clockLayout
+        val tone = ClockDrift.tone(now)
+        val ox = k.originX + ClockDrift.dx(k, now)
+        val oy = k.originY + ClockDrift.dy(k, now)
+        val radius = k.cardW * 0.05f
+        val digitSize = k.cardH * 0.86f
+        bold.textSize = digitSize
+        bold.textAlign = Paint.Align.CENTER
+        bold.getTextBounds("8", 0, 1, textBounds)
+        val baselineOffset = -(textBounds.top + textBounds.bottom) / 2f
+        for (i in 0 until 4) {
+            val v = flipClock.view(i, now)
+            val left = ox + k.cardLeft(i)
+            val card = Box(left, oy, left + k.cardW, oy + k.cardH)
+            val p = v.progress
+            if (p == null) {
+                clockHalf(c, card, v.to, true, 1f, 0, tone, radius, baselineOffset)
+                clockHalf(c, card, v.to, false, 1f, 0, tone, radius, baselineOffset)
+            } else {
+                // 奥に新しい上半分と古い下半分。その手前を、倒れていく古い上半分と、落ちてくる新しい下半分が覆う
+                val f = FlipCurve.frame(p)
+                clockHalf(c, card, v.to, true, 1f, 0, tone, radius, baselineOffset)
+                clockHalf(c, card, v.from, false, 1f, 0, tone, radius, baselineOffset)
+                if (f.top > 0f) clockHalf(c, card, v.from, true, f.top, ((1f - f.top) * 150).toInt(), tone, radius, baselineOffset)
+                if (f.bottom > 0f) clockHalf(c, card, v.to, false, f.bottom, ((1f - f.bottom) * 150).toInt(), tone, radius, baselineOffset)
+            }
+            // 継ぎ目
+            fill.color = shade(CLOCK_SEAM, tone)
+            val half = maxOf(1f, k.cardH * 0.006f)
+            c.drawRect(card.left, card.centerY - half, card.right, card.centerY + half, fill)
+        }
+        // コロン(点滅させない)
+        fill.color = shade(CLOCK_COLON, tone)
+        val dot = k.cardW * 0.08f
+        val cx = ox + k.colonX
+        for (fy in floatArrayOf(0.36f, 0.64f)) {
+            rect.set(cx - dot, oy + k.cardH * fy - dot, cx + dot, oy + k.cardH * fy + dot)
+            c.drawRoundRect(rect, dot * 0.25f, dot * 0.25f, fill)
+        }
+        if (flipping && running()) {
+            removeCallbacks(flipFrame)
+            postOnAnimation(flipFrame)
+        }
+    }
+
+    /**
+     * カードの上半分(`top`)か下半分を描く。継ぎ目を軸に高さを `scaleY`(0〜1)に縮め、`shadeAlpha`(0〜255)の影を重ねる。
+     * 数字はカード全体の中央に置いて、半分の範囲だけ切り出す
+     */
+    private fun clockHalf(c: Canvas, card: Box, digit: Int, top: Boolean, scaleY: Float, shadeAlpha: Int, tone: Float, radius: Float, baselineOffset: Float) {
+        c.save()
+        if (scaleY != 1f) c.scale(1f, scaleY, card.centerX, card.centerY)
+        if (top) c.clipRect(card.left, card.top, card.right, card.centerY) else c.clipRect(card.left, card.centerY, card.right, card.bottom)
+        fill.color = shade(if (top) CLOCK_CARD_TOP else CLOCK_CARD_BOTTOM, tone)
+        rect.set(card.left, card.top, card.right, card.bottom)
+        c.drawRoundRect(rect, radius, radius, fill)
+        bold.color = shade(CLOCK_DIGIT, tone)
+        c.drawText(digit.toString(), card.centerX, card.centerY + baselineOffset, bold)
+        if (shadeAlpha > 0) {
+            fill.color = Color.argb(shadeAlpha, 0, 0, 0)
+            c.drawRect(card.left, card.top, card.right, card.bottom, fill)
+        }
+        c.restore()
+    }
+
+    /** 色の明るさに `tone` を掛ける */
+    private fun shade(color: Int, tone: Float) =
+        Color.rgb((Color.red(color) * tone).toInt(), (Color.green(color) * tone).toInt(), (Color.blue(color) * tone).toInt())
 
     /** キオスクのモニターの状態。点灯中・消灯中と、手動オーバーライドの今の値 */
     private fun drawMonitor(c: Canvas, d: DisplayInfo?, dim: Boolean) {
@@ -457,10 +593,12 @@ class PanelView(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (e.actionMasked == MotionEvent.ACTION_DOWN) {
-            // 消灯中の最初のタッチは点けるだけ。ボタンは押さない
+            // 待機時計の最初のタッチは操作盤に戻すだけ。ボタンは押さない(時間切れ直後で表示が遅れていても取りこぼさない)
+            updateSleep()
             swallowing = sleeping
-            wake()
         }
+        // 押している間も無操作にしない(長押しの最中に待機へ入らない)
+        wake()
         if (swallowing) {
             if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) swallowing = false
             return true
@@ -546,5 +684,13 @@ class PanelView(
         private val WARN = Color.rgb(255, 196, 64)
         private val NG = Color.rgb(255, 92, 92)
         private val NG_DIM = Color.rgb(120, 32, 32)
+
+        // 待機時計(docs/IDLE_CLOCK.md の画面案)
+        private val CLOCK_BG = Color.rgb(3, 4, 5)
+        private val CLOCK_CARD_TOP = Color.rgb(24, 27, 30)
+        private val CLOCK_CARD_BOTTOM = Color.rgb(28, 31, 34)
+        private val CLOCK_SEAM = Color.rgb(5, 6, 7)
+        private val CLOCK_DIGIT = Color.rgb(167, 171, 174)
+        private val CLOCK_COLON = Color.rgb(116, 121, 125)
     }
 }

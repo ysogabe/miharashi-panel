@@ -53,7 +53,7 @@ class SettingsActivity : Activity() {
             isSingleLine = true
         }
         root.addView(token, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        root.addView(caption("触らずに操作盤を消灯するまでの分(0 = 消灯しない)"))
+        root.addView(caption("時計表示までの分(0 = 無効)"))
         sleep = EditText(this).apply {
             setText(settings.sleepMinutes.toString())
             inputType = InputType.TYPE_CLASS_NUMBER
@@ -111,7 +111,7 @@ class SettingsActivity : Activity() {
             return
         }
         val minutes = Settings.parseSleepMinutes(sleep.text.toString()) ?: run {
-            result.text = "消灯までの分は 0〜${Settings.MAX_SLEEP_MINUTES} の整数"
+            result.text = "時計表示までの分は 0〜${Settings.MAX_SLEEP_MINUTES} の整数"
             return
         }
         settings.url = u
