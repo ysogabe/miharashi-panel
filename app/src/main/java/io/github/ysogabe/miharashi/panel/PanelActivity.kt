@@ -54,6 +54,7 @@ class PanelActivity : Activity() {
     override fun onResume() {
         super.onResume()
         hideSystemBars()
+        view.setForegroundActive(true)
         // コールバックは変化したときしか来ないので、今の状態を先に読む
         view.wifi = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
             ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
@@ -73,6 +74,7 @@ class PanelActivity : Activity() {
     }
 
     override fun onPause() {
+        view.setForegroundActive(false)
         sync?.stop()
         sync = null
         runCatching { connectivity.unregisterNetworkCallback(wifiCallback) }
@@ -84,10 +86,10 @@ class PanelActivity : Activity() {
         if (hasFocus) hideSystemBars()
     }
 
-    /** 消灯中はバックライトを最小にする。画面は真っ黒なので、焼き付き・残像を避けられる。点灯でシステムの明るさに戻す */
+    /** 時計表示中はバックライトを5%にする。操作盤へ戻るとシステムの明るさに戻す */
     private fun setBacklight(sleeping: Boolean) {
         window.attributes = window.attributes.apply {
-            screenBrightness = if (sleeping) 0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            screenBrightness = if (sleeping) 0.05f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
         }
     }
 
