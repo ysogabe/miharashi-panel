@@ -33,12 +33,19 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.maxHeapSize = "3g"
+            if (System.getenv("PANEL_VIDEO_FRAMES") != null) it.outputs.upToDateWhen { false }
+            it.environment("TZ", "Asia/Tokyo")
+        }
     }
 }
 
 dependencies {
     // 依存は最小にする(設計書 §5.6)。HTTP は HttpURLConnection、JSON は Android 標準の org.json。
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     // android.jar の org.json はスタブなので、JVM の単体テストでは本物を使う
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")

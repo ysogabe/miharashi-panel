@@ -26,6 +26,9 @@ class PanelView(
     /** ボタンが押された。キーかモニターの切り替えを送り、結果(成功なら null)を `done` で返す */
     private val onAction: (action: Action, done: (String?) -> Unit) -> Unit,
     private val onSettings: () -> Unit,
+    /** 通常は実時計。オフライン描画ではフレームごとの固定時刻を渡す。 */
+    private val monotonicMs: () -> Long = { SystemClock.elapsedRealtime() },
+    private val epochMs: () -> Long = { System.currentTimeMillis() },
 ) : View(context) {
 
     // 待機時計のあいだは操作盤が見えないので、状態が変わるたびには描き直さない(復帰時は updateSleep が描き直す)
@@ -55,11 +58,11 @@ class PanelView(
     var sleepTimeoutMs = 0L
         set(value) {
             field = value
-            idle = IdleTimer(value, SystemClock.elapsedRealtime())
+            idle = IdleTimer(value, monotonicMs())
             updateSleep()
         }
 
-    private var idle = IdleTimer(0, SystemClock.elapsedRealtime())
+    private var idle = IdleTimer(0, monotonicMs())
 
     /** 待機時計を出している */
     private var sleeping = false
@@ -105,7 +108,7 @@ class PanelView(
     private fun scheduleTick() {
         removeCallbacks(ticker)
         if (!running()) return
-        val delay = if (sleeping) ClockSchedule.idleDelayMs(System.currentTimeMillis(), tzOffsetMs()) else 1_000L
+        val delay = if (sleeping) ClockSchedule.idleDelayMs(epochMs(), tzOffsetMs()) else 1_000L
         postDelayed(ticker, delay)
     }
 
@@ -114,17 +117,17 @@ class PanelView(
         removeCallbacks(flipFrame)
     }
 
-    private fun tzOffsetMs(epochMs: Long = System.currentTimeMillis()) = TimeZone.getDefault().getOffset(epochMs).toLong()
+    private fun tzOffsetMs(at: Long = epochMs()) = TimeZone.getDefault().getOffset(at).toLong()
 
     /** 時計の状態を今の時刻に合わせる。フリップ中なら true */
     private fun syncClock(mono: Long): Boolean {
-        val epoch = System.currentTimeMillis()
+        val epoch = epochMs()
         flipClock.update(epoch, tzOffsetMs(epoch), mono)
         return flipClock.isFlipping(mono)
     }
 
     private fun updateSleep() {
-        val s = idle.isSleeping(SystemClock.elapsedRealtime())
+        val s = idle.isSleeping(monotonicMs())
         if (s == sleeping) return
         sleeping = s
         pressed = null
@@ -138,7 +141,7 @@ class PanelView(
 
     /** 触ったのと同じに扱い、待機時計を出していれば操作盤に戻す(Activity に戻ったときなど) */
     fun wake() {
-        idle.touch(SystemClock.elapsedRealtime())
+        idle.touch(monotonicMs())
         updateSleep()
     }
 
@@ -156,7 +159,7 @@ class PanelView(
             stopUpdates()
             return
         }
-        idle.touch(SystemClock.elapsedRealtime())
+        idle.touch(monotonicMs())
         updateSleep()
         invalidate()
         scheduleTick()
@@ -203,7 +206,7 @@ class PanelView(
     }
 
     override fun onDraw(c: Canvas) {
-        val now = SystemClock.elapsedRealtime()
+        val now = monotonicMs()
         if (sleeping) {
             drawFlipClock(c, now)
             return
@@ -232,7 +235,7 @@ class PanelView(
         label(c, apiLabel, h.left + dp(484f), baseY, 18f, FG, bold)
         dot(c, h.left + dp(610f), h.centerY, if (wifi) OK else NG)
         label(c, "WIFI", h.left + dp(624f), baseY, 18f, FG, bold)
-        label(c, ClockMath.format(ClockMath.minuteOfDay(System.currentTimeMillis(), tzOffsetMs())), h.right - dp(20f), baseY, 26f, FG, bold, Paint.Align.RIGHT)
+        label(c, ClockMath.format(ClockMath.minuteOfDay(epochMs(), tzOffsetMs())), h.right - dp(20f), baseY, 26f, FG, bold, Paint.Align.RIGHT)
 
         // 左のレール: キオスクのモニターの状態と 消灯 / 点灯 / 自動、いちばん下に設定。
         // 現在の画面は中央に大きく出すので、画面一覧は置かない(直接遷移ができるまで)
@@ -662,7 +665,7 @@ class PanelView(
                 performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             } else {
                 lastError = err
-                failedUntil[failId] = SystemClock.elapsedRealtime() + FAIL_FLASH_MS
+                failedUntil[failId] = monotonicMs() + FAIL_FLASH_MS
                 performHapticFeedback(HapticFeedbackConstants.REJECT)
             }
             invalidate()

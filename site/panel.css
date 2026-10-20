@@ -70,3 +70,15 @@
 @media(max-width:1000px){.panel-notes,.transport-grid,.how-grid{grid-template-columns:1fr}.panel-roadmap{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:780px){.panel-shell{padding:12px}.panel-device{aspect-ratio:auto;min-height:420px}.panel-body{grid-template-columns:1fr}.panel-rail{flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;border-bottom:1px solid #1d2e3a}.panel-rail ol{flex:1;flex-direction:row}.panel-rail .rail-spacer{display:none}.panel-rail .rail-back{width:auto}.panel-now strong{font-size:18px}.side-keys{flex-direction:row;padding:0 12px 12px}.big-keys kbd{font-size:26px}.panel-clock .panel-settings{display:none}.panel-caption{flex-direction:column;align-items:flex-start}}
 @media(max-width:520px){.panel-roadmap{grid-template-columns:1fr}.panel-roadmap>li{border-right:0;border-bottom:1px solid #29404d;padding-left:0}.panel-dots{display:none}}
+
+/* The movie contains the native 2:1 panel inside a 16:9 editorial frame. */
+.intro-video video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  background: #07131c;
+  border: 1px solid #1d3341;
+  border-radius: 12px;
+}
+.intro-video .shot-note a { color: #72e2c5; overflow-wrap: anywhere; }
