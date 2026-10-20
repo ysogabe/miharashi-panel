@@ -161,9 +161,9 @@ sha256sum site/videos/miharashi-panel-30s.mp4 site/videos/miharashi-panel-30s-po
 python3 -m http.server 18765 --bind 127.0.0.1 --directory site
 ```
 
-LP は `controls muted loop playsinline preload="metadata"`、poster、フォールバック、常時表示のダウンロードリンクを備え、自動再生しません。PC / スマートフォンで再生・ポスター表示・横はみ出し・ダウンロードを確認してください。この実装段階のブラウザー最終確認は親タスクで行います。
+LP は `controls muted loop playsinline preload="metadata"`、poster、フォールバック、常時表示のダウンロードリンクを備え、自動再生しません。2026-10-20 に共同ブラウザーの 1280 / 390 / 360 px 幅で、動画とポスターの読み込み、再生開始、ダウンロードリンクとフォールバック文、横にはみ出さないことを確認しました。スマートフォンの確認は CSS の表示幅によるもので、実機やモバイル OS での確認ではありません。
 
-マージ後の Pages 公開・公開 URL の確認も親タスクで実施します。まだ今回の動画を公開したとはみなしません。公開後は次の HEAD リクエストで LP / MP4 が HTTP 200、MP4 が `Content-Type: video/mp4`、poster が画像として配信されることを確認し、実際にページから再生してください。
+マージすると Pages の公開処理が動きます。公開後は次の HEAD リクエストで LP / MP4 が HTTP 200、MP4 が `Content-Type: video/mp4`、poster が画像として配信されることを確認し、実際にページから再生してください。
 
 ```sh
 curl -I https://ysogabe.github.io/miharashi-panel/
