@@ -1,0 +1,128 @@
+{
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "timezone": "Asia/Tokyo",
+  "seed": 13,
+  "product": "Miharashi Panel",
+  "catch": [
+    "手元の小さな画面から、",
+    "モニターを操作する。"
+  ],
+  "lp": "ysogabe.github.io/miharashi-panel/",
+  "github": "github.com/ysogabe/miharashi-panel",
+  "scenes": {
+    "intro": {
+      "heading": "手元から、モニターを操作。",
+      "note": "Android のタッチ操作盤 / 仮データ・操作デモ / 音声なし"
+    },
+    "selection": {
+      "heading": "見たい画面へ、すぐに。",
+      "note": "前後の切り替えも、メニューの一覧から選択も。"
+    },
+    "photo": {
+      "heading": "いまの画面に合う操作を。",
+      "note": "写真の前後移動。枚数とボタンの説明を、本体の状態から表示。"
+    },
+    "rotation": {
+      "heading": "好きな画面で、ひと休み。",
+      "note": "青いカードで固定・再開。本体の自動巡回設定と対応 API が必要です。"
+    },
+    "monitor": {
+      "heading": "モニターの電源も、手元から。",
+      "note": "消灯・点灯・自動の切り替えには Home Assistant 連携が必要です。"
+    },
+    "clock": {
+      "heading": "触れない時間は、静かな時計に。",
+      "note": "無操作で移行（初期設定 3 分・待ち時間を省略）。最初のタッチは復帰だけ。"
+    },
+    "outro": {
+      "heading": "手元から、見晴らしを。",
+      "note": "Android / タッチ操作 / 公開用の仮データ / 音声なし"
+    }
+  },
+  "versions": {
+    "10": [
+      [
+        "intro",
+        2.5
+      ],
+      [
+        "selection",
+        5
+      ],
+      [
+        "outro",
+        2.5
+      ]
+    ],
+    "30": [
+      [
+        "intro",
+        2.5
+      ],
+      [
+        "selection",
+        5
+      ],
+      [
+        "photo",
+        5
+      ],
+      [
+        "rotation",
+        5
+      ],
+      [
+        "monitor",
+        4
+      ],
+      [
+        "clock",
+        4.5
+      ],
+      [
+        "outro",
+        4
+      ]
+    ],
+    "60": [
+      [
+        "intro",
+        5
+      ],
+      [
+        "selection",
+        10
+      ],
+      [
+        "photo",
+        10
+      ],
+      [
+        "rotation",
+        10
+      ],
+      [
+        "monitor",
+        8
+      ],
+      [
+        "clock",
+        9
+      ],
+      [
+        "outro",
+        8
+      ]
+    ]
+  },
+  "labels": {
+    "brand": "MIHARASHI / PANEL",
+    "demo": "仮データ・操作デモ",
+    "platform": "ANDROID / TOUCH PANEL",
+    "intro_detail": "手元に、専用の操作盤を。",
+    "footer": "MIHARASHI PANEL / ANDROID",
+    "silent": "音声なし"
+  }
+}

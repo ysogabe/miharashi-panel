@@ -10,3 +10,10 @@ local.properties
 *.keystore
 captures/
 .kotlin/
+
+# Reproducible intro video intermediates and non-LP variants
+work/intro/
+**/__pycache__/
+site/videos/*
+!site/videos/miharashi-panel-30s.mp4
+!site/videos/miharashi-panel-30s-poster.jpg
