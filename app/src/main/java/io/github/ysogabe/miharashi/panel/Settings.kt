@@ -21,10 +21,33 @@ class Settings(context: Context) {
         get() = prefs.getInt(KEY_SLEEP_MINUTES, DEFAULT_SLEEP_MINUTES)
         set(v) = prefs.edit().putInt(KEY_SLEEP_MINUTES, v.coerceIn(0, MAX_SLEEP_MINUTES)).apply()
 
+    val autoBrightness: Boolean get() = prefs.getBoolean(KEY_AUTO_BRIGHTNESS, true)
+    val darkOff: Boolean get() = prefs.getBoolean(KEY_DARK_OFF, true)
+    val darkLux: Float get() = prefs.getFloat(KEY_DARK_LUX, DEFAULT_DARK_LUX)
+        .takeIf { it.isFinite() && it in 0f..100f } ?: DEFAULT_DARK_LUX
+
+    /** 入力検証後、一度の編集で全設定を保存する。 */
+    fun save(url: String, token: String, minutes: Int, autoBrightness: Boolean, darkOff: Boolean, darkLux: Float) {
+        require(validate(url, token) == null)
+        require(minutes in 0..MAX_SLEEP_MINUTES)
+        require(darkLux.isFinite() && darkLux in 0f..100f)
+        prefs.edit().putString(KEY_URL, url.trim()).putString(KEY_TOKEN, token.trim())
+            .putInt(KEY_SLEEP_MINUTES, minutes).putBoolean(KEY_AUTO_BRIGHTNESS, autoBrightness)
+            .putBoolean(KEY_DARK_OFF, darkOff).putFloat(KEY_DARK_LUX, darkLux).apply()
+    }
+
     companion object {
         private const val KEY_URL = "url"
         private const val KEY_TOKEN = "token"
         private const val KEY_SLEEP_MINUTES = "sleep_minutes"
+        private const val KEY_AUTO_BRIGHTNESS = "auto_brightness"
+        private const val KEY_DARK_OFF = "dark_off"
+        private const val KEY_DARK_LUX = "dark_lux"
+        const val DEFAULT_DARK_LUX = 1f
+
+        fun parseDarkLux(s: String): Float? = s.trim().toFloatOrNull()
+            ?.takeIf { it.isFinite() && it in 0f..100f }
+
         const val DEFAULT_SLEEP_MINUTES = 3
         const val MAX_SLEEP_MINUTES = 240
 

@@ -7,9 +7,15 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.widget.Toast
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 /**
  * 操作盤。全画面(immersive)、常時点灯、横固定(設計書 §5.6)。
@@ -21,6 +27,20 @@ class PanelActivity : Activity() {
     private var sync: KioskSync? = null
     private var lastEndpoint: Pair<String, String>? = null
     private lateinit var connectivity: ConnectivityManager
+    private val main = Handler(Looper.getMainLooper())
+    private lateinit var light: LightSensorReader
+    private var darkness = DarknessPolicy(Settings.DEFAULT_DARK_LUX)
+    private var lux: Float? = null
+    private var sleeping = false
+    private var active = false
+    private var automaticRequest: AtomicBoolean? = null
+    private val darknessDeadline = Runnable { checkDarkness() }
+
+    private fun cancelAutomaticRequest() {
+        automaticRequest?.set(true)
+        automaticRequest = null
+        main.removeCallbacks(darknessDeadline)
+    }
 
     private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
@@ -44,15 +64,35 @@ class PanelActivity : Activity() {
         getSystemService(KeyguardManager::class.java)?.requestDismissKeyguard(this, null)
         view = PanelView(
             this,
-            onAction = { action, done -> sync?.send(action, done) ?: done("未接続") },
+            onAction = { action, done ->
+                if (action is Action.Display) {
+                    cancelAutomaticRequest()
+                    darkness.handled()
+                }
+                sync?.send(action, done) ?: done("未接続")
+            },
             onSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
-        view.onSleepChanged = { sleeping -> setBacklight(sleeping) }
+        view.onSleepChanged = { sleeping = it; setBacklight() }
+        light = LightSensorReader(this) { value ->
+            lux = value
+            if (active) {
+                // 通信待ちの間に暗闇でなくなったら、まだ送っていない消灯も取り消す。
+                if (value == null || value > darkness.thresholdLux) cancelAutomaticRequest()
+                darkness.observe(value, SystemClock.elapsedRealtime())
+                setBacklight()
+                checkDarkness()
+            }
+        }
         setContentView(view)
     }
 
     override fun onResume() {
         super.onResume()
+        active = true
+        lux = null
+        sleeping = false
+        if (darkness.thresholdLux != settings.darkLux) darkness = DarknessPolicy(settings.darkLux)
         hideSystemBars()
         view.setForegroundActive(true)
         // コールバックは変化したときしか来ないので、今の状態を先に読む
@@ -61,19 +101,32 @@ class PanelActivity : Activity() {
         connectivity.registerDefaultNetworkCallback(wifiCallback)
         val endpoint = settings.url to settings.token
         // 接続先が変わったら、前のキオスクの状態は捨てる
-        if (endpoint != lastEndpoint) view.state = PanelState()
+        if (endpoint != lastEndpoint) {
+            view.state = PanelState()
+            darkness = DarknessPolicy(settings.darkLux)
+        }
         lastEndpoint = endpoint
         view.configured = settings.configured
         // 設定から戻ったときも、ここから数え直す
         view.sleepTimeoutMs = settings.sleepMinutes * 60_000L
         view.wake()
         if (settings.configured) {
-            sync = KioskSync(KioskClient(settings.url, settings.token), view.state) { view.state = it }
+            sync = KioskSync(KioskClient(settings.url, settings.token), view.state, ::onKioskState)
                 .also { it.start() }
         }
+        setBacklight()
+        if (settings.autoBrightness || settings.darkOff) light.start()
     }
 
     override fun onPause() {
+        active = false
+        cancelAutomaticRequest()
+        darkness.stopObserving()
+        light.stop()
+        lux = null
+        window.attributes = window.attributes.apply {
+            screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
         view.setForegroundActive(false)
         sync?.stop()
         sync = null
@@ -86,11 +139,45 @@ class PanelActivity : Activity() {
         if (hasFocus) hideSystemBars()
     }
 
-    /** 時計表示中はバックライトを5%にする。操作盤へ戻るとシステムの明るさに戻す */
-    private fun setBacklight(sleeping: Boolean) {
-        window.attributes = window.attributes.apply {
-            screenBrightness = if (sleeping) 0.05f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+    private fun setBacklight() {
+        if (!active) return
+        val value = AmbientBrightness.value(lux, settings.autoBrightness, sleeping)
+        val old = window.attributes.screenBrightness
+        // 小さな揺れでウィンドウ設定を書き換え続けない。モード切替と5%への移行は必ず反映。
+        if (old == value || (old >= 0 && value >= 0 && !sleeping && abs(old - value) < 0.02f)) return
+        window.attributes = window.attributes.apply { screenBrightness = value }
+    }
+
+    private fun checkDarkness() {
+        main.removeCallbacks(darknessDeadline)
+        if (!active || !settings.darkOff) return
+        val now = SystemClock.elapsedRealtime()
+        val remaining = darkness.remainingMs(now) ?: return
+        if (remaining > 0) {
+            main.postDelayed(darknessDeadline, remaining)
+            return
         }
+        val source = sync ?: return
+        if (!darkness.takeRequest(view.state, now)) return
+        val validUntilMs = view.state.lastOkAtMs!! + PanelState.FRESH_MS
+        val cancelled = AtomicBoolean(false)
+        automaticRequest = cancelled
+        source.send(Action.Display("force_off"), { error ->
+            if (active && sync === source && !cancelled.get()) {
+                automaticRequest = null
+                Toast.makeText(this,
+                    if (error == null) "暗闇を検出してモニターを消灯しました"
+                    else "暗闇での消灯に失敗: $error", Toast.LENGTH_LONG).show()
+            }
+        }, isCurrent = { !cancelled.get() && SystemClock.elapsedRealtime() <= validUntilMs })
+    }
+
+    private fun onKioskState(state: PanelState) {
+        view.state = state
+        if (automaticRequest != null && !darkness.canTurnOff(state, SystemClock.elapsedRealtime())) {
+            cancelAutomaticRequest()
+        }
+        checkDarkness()
     }
 
     /** immersive sticky: バーを隠し、端からのスワイプで一時的にだけ出す */
