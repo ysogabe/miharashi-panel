@@ -89,10 +89,12 @@ class KioskSync(
     /**
      * キー(`/input`)、画面の選択(`/screen`)、モニターの切り替え(`/display`)、巡回の停止・再開(`/rotation`)を送る。結果(成功なら null、失敗なら理由)を UI スレッドで返す。
      * 失敗しても再送しない(二重送信を避ける)。成功したら、SSE を待たずに `/status` を読み直して表示を早く追従させる。
+     * `isCurrent` は送信スレッドでも読む。自動操作にはAtomicBooleanによる取消判定を渡す。
      */
-    fun send(action: Action, done: (String?) -> Unit) {
+    fun send(action: Action, done: (String?) -> Unit, isCurrent: () -> Boolean = { true }) {
         if (!running) return done("停止中")
         sender.execute {
+            if (!running || !isCurrent()) return@execute
             val err = try {
                 when (action) {
                     is Action.Key -> client.input(action.name)
@@ -105,7 +107,7 @@ class KioskSync(
             } catch (e: Exception) {
                 describe(e)
             }
-            main.post { done(err) }
+            main.post { if (running && isCurrent()) done(err) }
             if (err == null) poll()
         }
     }
