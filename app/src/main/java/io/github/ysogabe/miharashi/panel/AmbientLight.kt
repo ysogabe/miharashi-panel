@@ -45,11 +45,15 @@ class DarknessPolicy(val thresholdLux: Float) {
 
     fun takeRequest(state: PanelState, nowMs: Long): Boolean {
         if (remainingMs(nowMs) != 0L) return false
-        val display = state.status?.display ?: return false
-        if (state.lastError != null || state.freshness(nowMs) != Freshness.FRESH ||
-            !display.control || display.mode != "auto" || !display.on) return false
+        if (!canTurnOff(state, nowMs)) return false
         handled()
         return true
+    }
+
+    fun canTurnOff(state: PanelState, nowMs: Long): Boolean {
+        val display = state.status?.display ?: return false
+        return state.lastError == null && state.freshness(nowMs) == Freshness.FRESH &&
+            display.control && display.mode == "auto" && display.on
     }
 
     companion object { const val DELAY_MS = 30_000L }

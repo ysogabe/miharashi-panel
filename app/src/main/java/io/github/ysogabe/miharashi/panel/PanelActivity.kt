@@ -77,6 +77,8 @@ class PanelActivity : Activity() {
         light = LightSensorReader(this) { value ->
             lux = value
             if (active) {
+                // 通信待ちの間に暗闇でなくなったら、まだ送っていない消灯も取り消す。
+                if (value == null || value > darkness.thresholdLux) cancelAutomaticRequest()
                 darkness.observe(value, SystemClock.elapsedRealtime())
                 setBacklight()
                 checkDarkness()
@@ -109,10 +111,7 @@ class PanelActivity : Activity() {
         view.sleepTimeoutMs = settings.sleepMinutes * 60_000L
         view.wake()
         if (settings.configured) {
-            sync = KioskSync(KioskClient(settings.url, settings.token), view.state) {
-                view.state = it
-                checkDarkness()
-            }
+            sync = KioskSync(KioskClient(settings.url, settings.token), view.state, ::onKioskState)
                 .also { it.start() }
         }
         setBacklight()
@@ -160,6 +159,7 @@ class PanelActivity : Activity() {
         }
         val source = sync ?: return
         if (!darkness.takeRequest(view.state, now)) return
+        val validUntilMs = view.state.lastOkAtMs!! + PanelState.FRESH_MS
         val cancelled = AtomicBoolean(false)
         automaticRequest = cancelled
         source.send(Action.Display("force_off"), { error ->
@@ -169,7 +169,15 @@ class PanelActivity : Activity() {
                     if (error == null) "暗闇を検出してモニターを消灯しました"
                     else "暗闇での消灯に失敗: $error", Toast.LENGTH_LONG).show()
             }
-        }, isCurrent = { !cancelled.get() })
+        }, isCurrent = { !cancelled.get() && SystemClock.elapsedRealtime() <= validUntilMs })
+    }
+
+    private fun onKioskState(state: PanelState) {
+        view.state = state
+        if (automaticRequest != null && !darkness.canTurnOff(state, SystemClock.elapsedRealtime())) {
+            cancelAutomaticRequest()
+        }
+        checkDarkness()
     }
 
     /** immersive sticky: バーを隠し、端からのスワイプで一時的にだけ出す */

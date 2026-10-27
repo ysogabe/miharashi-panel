@@ -4,6 +4,7 @@ import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.CheckBox
@@ -54,10 +55,12 @@ class SettingsActivity : Activity() {
         root.addView(url, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(caption("トークン(/etc/miharashi/panel.token)"))
         token = EditText(this).apply {
-            setText(settings.token)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(settings.token)
             setTextColor(Color.WHITE)
             isSingleLine = true
+            // setSingleLine は変換を上書きするので、パスワードのマスクを最後に指定する。
+            transformationMethod = PasswordTransformationMethod.getInstance()
         }
         root.addView(token, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(caption("時計表示までの分(0 = 無効)"))
