@@ -6,9 +6,17 @@ import kotlin.math.max
 /** 照度と待機時計からウィンドウの明るさを一箇所で決める。-1 はシステム設定。 */
 object AmbientBrightness {
     fun value(lux: Float?, enabled: Boolean, sleeping: Boolean): Float {
-        if (sleeping) return 0.05f
-        if (!enabled || lux == null || !lux.isFinite() || lux < 0) return -1f
+        if (!enabled || lux == null || !lux.isFinite() || lux < 0) return if (sleeping) 0.05f else -1f
         return (0.05 + 0.95 * ln(1.0 + lux) / ln(501.0)).toFloat().coerceIn(0.05f, 1f)
+    }
+}
+
+/** 10 lx 以下は従来色、250 lx 以上は最大。滑らかな補間で境界の色飛びを避ける。 */
+object AmbientContrast {
+    fun strength(lux: Float?, enabled: Boolean): Float {
+        if (!enabled || lux == null || !lux.isFinite() || lux < 0) return 0f
+        val t = ((lux - 10f) / 240f).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
     }
 }
 

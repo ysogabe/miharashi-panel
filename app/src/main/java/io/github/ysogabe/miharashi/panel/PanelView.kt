@@ -31,6 +31,21 @@ class PanelView(
     private val epochMs: () -> Long = { System.currentTimeMillis() },
 ) : View(context) {
 
+    /** 照度による色補正。時計表示中も即座に描き直す。 */
+    var contrastStrength = 0f
+        set(value) {
+            val next = if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+            if (field == next) return
+            field = next
+            invalidate()
+        }
+
+    private fun contrastColor(base: Int, target: Int): Int {
+        fun channel(a: Int, b: Int) = (a + (b - a) * contrastStrength).toInt()
+        return Color.rgb(channel(Color.red(base), Color.red(target)),
+            channel(Color.green(base), Color.green(target)), channel(Color.blue(base), Color.blue(target)))
+    }
+
     // 待機時計のあいだは操作盤が見えないので、状態が変わるたびには描き直さない(復帰時は updateSleep が描き直す)
     var state = PanelState()
         set(value) {
@@ -280,7 +295,7 @@ class PanelView(
         val flipping = syncClock(now)
         c.drawColor(CLOCK_BG)
         val k = clockLayout
-        val tone = ClockDrift.tone(now)
+        val tone = ClockDrift.tone(now).let { it + (1f - it) * contrastStrength }
         val ox = k.originX + ClockDrift.dx(k, now)
         val oy = k.originY + ClockDrift.dy(k, now)
         val radius = k.cardW * 0.05f
@@ -475,6 +490,8 @@ class PanelView(
                 else -> PANEL
             }
             roundRect(c, row, bg, 10f)
+            if (contrastStrength > 0f && (i == selected || failed))
+                strokeRoundRect(c, row, if (failed) NG else if (dim) MUTED else ACCENT, 2f)
             if (i == selected) {
                 fill.color = if (dim) MUTED else ACCENT
                 rect.set(row.left, row.top, row.left + dp(6f), row.bottom)
@@ -534,6 +551,8 @@ class PanelView(
             else -> KEY
         }
         roundRect(c, b.box, bg)
+        if (usable && contrastStrength > 0f)
+            strokeRoundRect(c, b.box, if (failed) NG else if (selected) ACCENT else MUTED, 1f + contrastStrength)
         val fg = if (usable) FG else DISABLED
         // 押しても何もしないキーは、汎用のラベルを灰色で出す
         val shown = labelOf(b) ?: b.label
@@ -672,14 +691,25 @@ class PanelView(
         }
     }
 
+    private val BG get() = contrastColor(BASE_BG, Color.BLACK)
+    private val PANEL get() = contrastColor(BASE_PANEL, Color.rgb(10, 14, 20))
+    private val KEY get() = contrastColor(BASE_KEY, Color.rgb(45, 60, 78))
+    private val FG get() = contrastColor(BASE_FG, Color.WHITE)
+    private val MUTED get() = contrastColor(BASE_MUTED, Color.rgb(200, 210, 220))
+    private val CLOCK_BG get() = contrastColor(BASE_CLOCK_BG, Color.BLACK)
+    private val CLOCK_CARD_TOP get() = contrastColor(BASE_CLOCK_CARD_TOP, Color.rgb(10, 12, 14))
+    private val CLOCK_CARD_BOTTOM get() = contrastColor(BASE_CLOCK_CARD_BOTTOM, Color.rgb(14, 16, 18))
+    private val CLOCK_DIGIT get() = contrastColor(BASE_CLOCK_DIGIT, Color.WHITE)
+    private val CLOCK_COLON get() = contrastColor(BASE_CLOCK_COLON, Color.WHITE)
+
     companion object {
         const val FAIL_FLASH_MS = 800L
         private const val ROTATION_ID = "rotation"
-        private val BG = Color.rgb(8, 11, 16)
-        private val PANEL = Color.rgb(20, 26, 34)
-        private val KEY = Color.rgb(32, 42, 56)
-        private val FG = Color.rgb(230, 236, 242)
-        private val MUTED = Color.rgb(132, 146, 162)
+        private val BASE_BG = Color.rgb(8, 11, 16)
+        private val BASE_PANEL = Color.rgb(20, 26, 34)
+        private val BASE_KEY = Color.rgb(32, 42, 56)
+        private val BASE_FG = Color.rgb(230, 236, 242)
+        private val BASE_MUTED = Color.rgb(132, 146, 162)
         private val DISABLED = Color.rgb(70, 80, 92)
         private val ACCENT = Color.rgb(79, 195, 247)
         private val ACCENT_DIM = Color.rgb(24, 64, 88)
@@ -689,11 +719,11 @@ class PanelView(
         private val NG_DIM = Color.rgb(120, 32, 32)
 
         // 待機時計(docs/IDLE_CLOCK.md の画面案)
-        private val CLOCK_BG = Color.rgb(3, 4, 5)
-        private val CLOCK_CARD_TOP = Color.rgb(24, 27, 30)
-        private val CLOCK_CARD_BOTTOM = Color.rgb(28, 31, 34)
+        private val BASE_CLOCK_BG = Color.rgb(3, 4, 5)
+        private val BASE_CLOCK_CARD_TOP = Color.rgb(24, 27, 30)
+        private val BASE_CLOCK_CARD_BOTTOM = Color.rgb(28, 31, 34)
         private val CLOCK_SEAM = Color.rgb(5, 6, 7)
-        private val CLOCK_DIGIT = Color.rgb(167, 171, 174)
-        private val CLOCK_COLON = Color.rgb(116, 121, 125)
+        private val BASE_CLOCK_DIGIT = Color.rgb(167, 171, 174)
+        private val BASE_CLOCK_COLON = Color.rgb(116, 121, 125)
     }
 }

@@ -73,7 +73,7 @@ class PanelActivity : Activity() {
             },
             onSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
-        view.onSleepChanged = { sleeping = it; setBacklight() }
+        view.onSleepChanged = { sleeping = it; setBacklight(force = true) }
         light = LightSensorReader(this) { value ->
             lux = value
             if (active) {
@@ -139,12 +139,13 @@ class PanelActivity : Activity() {
         if (hasFocus) hideSystemBars()
     }
 
-    private fun setBacklight() {
+    private fun setBacklight(force: Boolean = false) {
         if (!active) return
+        view.contrastStrength = AmbientContrast.strength(lux, settings.autoBrightness)
         val value = AmbientBrightness.value(lux, settings.autoBrightness, sleeping)
         val old = window.attributes.screenBrightness
         // 小さな揺れでウィンドウ設定を書き換え続けない。モード切替と5%への移行は必ず反映。
-        if (old == value || (old >= 0 && value >= 0 && !sleeping && abs(old - value) < 0.02f)) return
+        if (old == value || (old >= 0 && value >= 0 && !force && value != 0.05f && abs(old - value) < 0.02f)) return
         window.attributes = window.attributes.apply { screenBrightness = value }
     }
 

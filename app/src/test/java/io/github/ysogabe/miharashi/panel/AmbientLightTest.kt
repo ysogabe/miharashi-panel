@@ -86,14 +86,14 @@ class AmbientLightTest {
         assertTrue(policy.takeRequest(state(130_000), 130_000))
     }
 
-    @Test fun brightnessIsBoundedMonotonicAndClockAlwaysHasPriority() {
+    @Test fun brightnessIsBoundedMonotonicForPanelAndClock() {
         var previous = 0f
         for (lux in listOf(0f, 1f, 5f, 10f, 50f, 100f, 500f, Float.MAX_VALUE)) {
             val value = AmbientBrightness.value(lux, true, false)
             assertTrue(value in 0.05f..1f)
             assertTrue(value >= previous)
             previous = value
-            assertEquals(0.05f, AmbientBrightness.value(lux, true, true))
+            assertEquals(value, AmbientBrightness.value(lux, true, true))
         }
         for (lux in listOf(null, Float.NaN, Float.POSITIVE_INFINITY, -1f)) {
             assertEquals(-1f, AmbientBrightness.value(lux, true, false))
@@ -101,6 +101,22 @@ class AmbientLightTest {
         }
         assertEquals(-1f, AmbientBrightness.value(500f, false, false))
         assertEquals(0.05f, AmbientBrightness.value(500f, false, true))
+    }
+
+    @Test fun contrastIsBoundedMonotonicAndHasSafeFallbacks() {
+        var previous = 0f
+        for (lux in listOf(0f, 10f, 11f, 50f, 100f, 200f, 250f, 500f, Float.MAX_VALUE)) {
+            val strength = AmbientContrast.strength(lux, true)
+            assertTrue(strength in previous..1f)
+            previous = strength
+            assertEquals(0f, AmbientContrast.strength(lux, false))
+        }
+        assertEquals(0f, AmbientContrast.strength(10f, true))
+        assertEquals(1f, AmbientContrast.strength(250f, true))
+        for (lux in listOf(null, -1f, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY))
+            assertEquals(0f, AmbientContrast.strength(lux, true))
+        assertEquals(0.05f, AmbientBrightness.value(0f, true, true))
+        assertEquals(1f, AmbientBrightness.value(500f, true, true))
     }
 
     @Test fun luxInputRejectsNonFiniteAndOutOfRangeValues() {
