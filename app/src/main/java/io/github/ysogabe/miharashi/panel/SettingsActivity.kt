@@ -83,12 +83,12 @@ class SettingsActivity : Activity() {
             }
         }
         autoBrightness = CheckBox(this).apply {
-            text = "照度に合わせてShow 5の明るさを調整"
+            text = "照度に合わせてShow 5の明るさ・コントラストを調整"
             setTextColor(Color.WHITE)
             isChecked = settings.autoBrightness
         }
         root.addView(autoBrightness)
-        root.addView(caption("操作盤は5〜100%、待機時計は5%。設定画面はシステムの明るさを使います。"))
+        root.addView(caption("操作盤・時計の明るさを5〜100%に調整し、明るい場所ではコントラストも上げます。設定画面はシステムの明るさです。"))
         darkOff = CheckBox(this).apply {
             text = "真っ暗な状態が30秒続いたらmiharashiを消灯"
             setTextColor(Color.WHITE)

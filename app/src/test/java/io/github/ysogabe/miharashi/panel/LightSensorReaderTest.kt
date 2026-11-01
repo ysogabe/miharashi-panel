@@ -97,6 +97,39 @@ class LightSensorReaderTest {
         }
     }
 
+    @Test fun activityUpdatesContrastAndBrightnessWhileClockIsSleeping() {
+        val sensor = sensor()
+        context.getSharedPreferences("panel", Context.MODE_PRIVATE).edit()
+            .putBoolean("auto_brightness", true).putBoolean("dark_off", false).apply()
+        shadowOf(context.getSystemService(KeyguardManager::class.java)).setKeyguardLocked(true)
+        val controller = Robolectric.buildActivity(PanelActivity::class.java).setup()
+        val activity = controller.get()
+        val panel = activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as PanelView
+        try {
+            panel.sleepTimeoutMs = 1L
+            shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
+            assertEquals(0.05f, activity.window.attributes.screenBrightness)
+            manager().sendSensorEventToListeners(event(sensor, 500f), sensor)
+            assertEquals(1f, activity.window.attributes.screenBrightness)
+            assertEquals(1f, panel.contrastStrength)
+            manager().sendSensorEventToListeners(event(sensor, 499f), sensor)
+            assertEquals(1f, activity.window.attributes.screenBrightness)
+            manager().sendSensorEventToListeners(event(sensor, Float.NaN), sensor)
+            assertEquals(0.05f, activity.window.attributes.screenBrightness)
+            assertEquals(0f, panel.contrastStrength)
+            panel.wake()
+            assertEquals(-1f, activity.window.attributes.screenBrightness)
+            controller.pause()
+            context.getSharedPreferences("panel", Context.MODE_PRIVATE).edit()
+                .putBoolean("auto_brightness", false).apply()
+            controller.resume()
+            assertEquals(0f, panel.contrastStrength)
+            assertEquals(-1f, activity.window.attributes.screenBrightness)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test fun settingsSavePreservesOtherValuesAndRejectsPartialInvalidUpdate() {
         val settings = Settings(context)
         settings.save("http://localhost", "0123456789abcdef", 8, false, false, 2.5f)
