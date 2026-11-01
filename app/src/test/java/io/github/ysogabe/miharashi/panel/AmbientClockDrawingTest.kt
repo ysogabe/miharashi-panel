@@ -15,6 +15,42 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [30])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AmbientClockDrawingTest {
+    @Test fun outlinesFadeInContinuouslyAtTheAmbientThreshold() {
+        val status = KioskStatus.parse(javaClass.getResource("/fixtures/status-display.json")!!.readText())
+        val panel = PanelView(RuntimeEnvironment.getApplication(), { _, _ -> }, {},
+            monotonicMs = { 0L }, epochMs = { 0L })
+        panel.layout(0, 0, 960, 480)
+        panel.configured = true
+        fun pixels(lux: Float): IntArray {
+            panel.contrastStrength = AmbientContrast.strength(lux, true)
+            val bitmap = Bitmap.createBitmap(960, 480, Bitmap.Config.ARGB_8888)
+            panel.draw(Canvas(bitmap))
+            return IntArray(960 * 480).also {
+                bitmap.getPixels(it, 0, 960, 0, 0, 960, 480)
+                bitmap.recycle()
+            }
+        }
+        for (menu in listOf(null, 0)) {
+            panel.state = PanelState().withStatus(status.copy(menu = menu), 0L)
+            val baseline = pixels(10f)
+            val boundary = pixels(10.1f)
+            val bright = pixels(250f)
+            var biggestStep = 0
+            var brightChanges = 0
+            for (i in baseline.indices) {
+                for (shift in intArrayOf(0, 8, 16)) {
+                    val from = (baseline[i] ushr shift) and 255
+                    val to = (boundary[i] ushr shift) and 255
+                    biggestStep = maxOf(biggestStep, kotlin.math.abs(from - to))
+                }
+                if (baseline[i] != bright[i]) brightChanges++
+            }
+            // 色補間とアンチエイリアスの丸め誤差だけを許容し、不透明な枠の出現を検出する。
+            assertTrue("10 lx boundary must not suddenly draw opaque outlines (menu=$menu, step=$biggestStep)", biggestStep <= 2)
+            assertTrue("bright contrast must visibly change the rendered panel", brightChanges > 100)
+        }
+    }
+
     @Test fun brightClockHasWhiteDigitsAndColonDespiteToneDrift() {
         var now = 0L
         val panel = PanelView(RuntimeEnvironment.getApplication(), { _, _ -> }, {},

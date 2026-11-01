@@ -46,6 +46,10 @@ class PanelView(
             channel(Color.green(base), Color.green(target)), channel(Color.blue(base), Color.blue(target)))
     }
 
+    /** 枠も強度ゼロから徐々に濃くし、照度境界で不透明な線が突然現れるのを防ぐ。 */
+    private fun contrastOutline(color: Int): Int = Color.argb(
+        (Color.alpha(color) * contrastStrength).toInt(), Color.red(color), Color.green(color), Color.blue(color))
+
     // 待機時計のあいだは操作盤が見えないので、状態が変わるたびには描き直さない(復帰時は updateSleep が描き直す)
     var state = PanelState()
         set(value) {
@@ -490,8 +494,8 @@ class PanelView(
                 else -> PANEL
             }
             roundRect(c, row, bg, 10f)
-            if (contrastStrength > 0f && (i == selected || failed))
-                strokeRoundRect(c, row, if (failed) NG else if (dim) MUTED else ACCENT, 2f)
+            if (i == selected || failed)
+                strokeRoundRect(c, row, contrastOutline(if (failed) NG else if (dim) MUTED else ACCENT), 2f)
             if (i == selected) {
                 fill.color = if (dim) MUTED else ACCENT
                 rect.set(row.left, row.top, row.left + dp(6f), row.bottom)
@@ -551,8 +555,8 @@ class PanelView(
             else -> KEY
         }
         roundRect(c, b.box, bg)
-        if (usable && contrastStrength > 0f)
-            strokeRoundRect(c, b.box, if (failed) NG else if (selected) ACCENT else MUTED, 1f + contrastStrength)
+        if (usable)
+            strokeRoundRect(c, b.box, contrastOutline(if (failed) NG else if (selected) ACCENT else MUTED), 1f + contrastStrength)
         val fg = if (usable) FG else DISABLED
         // 押しても何もしないキーは、汎用のラベルを灰色で出す
         val shown = labelOf(b) ?: b.label
