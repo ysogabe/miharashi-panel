@@ -697,13 +697,72 @@ class BridgeClientTest {
         }
     }
 
-    @Test fun abortInFlightEndsABlockedEventsCallAndTheClientKeepsWorking() {
+    /**
+     * 複数の接続を受ける素のサーバー。最初の接続は `first`(SSE の途中で止まる)、2 本目以降は `routes` が要求行から返す応答を返して閉じる。
+     * (JDK の `disconnect()` は Content-Length・chunked の応答を読んでいる最中だとその読みが終わるまで戻らないので、
+     * 「読みが止まった SSE」は終端の無い素の応答で再現し、同じインスタンスの後続の通信も同じサーバーで受ける。)
+     */
+    private class MultiRawServer(first: (Socket) -> Unit, routes: (String) -> ByteArray) : AutoCloseable {
+        val socket = ServerSocket(0)
+        val requestLines = java.util.concurrent.CopyOnWriteArrayList<String>()
+        private val acceptor = thread(isDaemon = true) {
+            var n = 0
+            try {
+                while (true) {
+                    val s = socket.accept()
+                    val index = n++
+                    thread(isDaemon = true) {
+                        try {
+                            s.use {
+                                val input = it.getInputStream()
+                                val head = StringBuilder()
+                                while (!head.endsWith("\r\n\r\n")) {
+                                    val ch = input.read()
+                                    if (ch < 0) return@thread
+                                    head.append(ch.toChar())
+                                }
+                                val lines = head.toString().split("\r\n")
+                                requestLines += lines[0]
+                                val len = lines.firstOrNull { l -> l.startsWith("Content-Length:", ignoreCase = true) }?.substringAfter(':')?.trim()?.toInt() ?: 0
+                                repeat(len) { input.read() }
+                                if (index == 0) first(it) else it.getOutputStream().apply { write(routes(lines[0])); flush() }
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        val url get() = "http://127.0.0.1:${socket.localPort}"
+        override fun close() {
+            socket.close()
+            acceptor.join(2_000)
+        }
+    }
+
+    private fun rawResponse(type: String, body: ByteArray, code: String = "200 OK") =
+        ("HTTP/1.1 $code\r\nContent-Type: $type\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n").toByteArray() + body
+
+    @Test fun abortInFlightEndsABlockedEventsCallAndTheSameClientKeepsWorking() {
         val connected = CountDownLatch(1)
-        RawServer { s, _ ->
-            s.write(sseHead + ": hello\n\n")
-            connected.countDown()
-            Thread.sleep(10_000)
-        }.use { raw ->
+        val sseBody = ev("state", """{"seq":0,"state":"speech"}""", 0) + ev("done", """{"seq":1}""", 1)
+        val wav = WavFixtures.valid(ms = 100)
+        MultiRawServer(
+            first = { s ->
+                s.write(sseHead + ": hello\n\n")
+                connected.countDown()
+                Thread.sleep(10_000)
+            },
+            routes = { line ->
+                when {
+                    line.startsWith("POST /v1/voice/sessions ") -> rawResponse("application/json", """{"session_id":"$sid","limits":{}}""".toByteArray(), "201 Created")
+                    line.startsWith("POST ") -> rawResponse("application/json", """{"state":"listening","accepted_seq":3}""".toByteArray())
+                    line.contains("/events ") -> rawResponse("text/event-stream", sseBody.toByteArray())
+                    else -> rawResponse("audio/wav", wav)
+                }
+            },
+        ).use { raw ->
             val c = client(base = raw.url)
             val result = AtomicReference<Throwable?>()
             val finished = CountDownLatch(1)
@@ -722,15 +781,15 @@ class BridgeClientTest {
             assertTrue("abort で SSE の読みが戻る", finished.await(3, TimeUnit.SECONDS))
             assertTrue((System.nanoTime() - t0) / 1_000_000 < 2_000)
             assertEquals(BridgeFailure.NETWORK, (result.get() as BridgeException).kind)
+            // abort のあとも、SSE を中断した同じインスタンスが普通に通信できる(abort 前に始まった呼び出しだけが無効で、あとに始めた呼び出しは有効)
+            assertEquals(sid, c.createSession(request).sessionId)
+            assertEquals(ChunkAck(AckState.LISTENING, 3), c.sendAudio(sid, 3, ByteArray(640), false))
+            c.abortInFlight() // 通信していないときの abort も、そのあとの呼び出しに響かない
+            assertEquals(ChunkAck(AckState.LISTENING, 3), c.sendAudio(sid, 3, ByteArray(640), false))
+            assertEquals(listOf<BridgeEvent>(BridgeEvent.State(0, HostState.SPEECH), BridgeEvent.Done(1)), collect(c))
+            assertEquals(wav.size, c.fetchReplyAudio(sid, 0).size)
+            assertEquals(6, raw.requestLines.size)
         }
-        // abort のあとも同じクライアントが普通に通信できる(壊れていない)
-        server.enqueue(json("""{"state":"listening","accepted_seq":2}"""))
-        val c2 = client()
-        c2.abortInFlight()
-        assertEquals(ChunkAck(AckState.LISTENING, 2), c2.sendAudio(sid, 2, ByteArray(640), false))
-        c2.abortInFlight()
-        server.enqueue(json("""{"state":"listening","accepted_seq":3}"""))
-        assertEquals(ChunkAck(AckState.LISTENING, 3), c2.sendAudio(sid, 3, ByteArray(640), false))
     }
 
     @Test fun abortInFlightEndsASendThatNeverGetsAnAnswer() {
@@ -753,6 +812,163 @@ class BridgeClientTest {
         val e = result.get() as BridgeException
         assertEquals(BridgeFailure.NETWORK, e.kind)
         assertTrue(e.isRetryable)
+    }
+
+    // =========================================================================================
+    // 中断との競合(登録したあと・通信を始める前の abort)と、1 回の呼び出し = HTTP 要求 1 回
+
+    private enum class HookPoint { AFTER_REGISTER, BEFORE_CONNECT }
+
+    private class HoldHooks(private val point: HookPoint) : BridgeClient.TestHooks {
+        val reached = CountDownLatch(1)
+        val release = CountDownLatch(1)
+
+        private fun hold(p: HookPoint) {
+            if (p != point) return
+            reached.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        }
+
+        override fun afterRegister(path: String) = hold(HookPoint.AFTER_REGISTER)
+        override fun beforeConnect(path: String) = hold(HookPoint.BEFORE_CONNECT)
+    }
+
+    /** 呼び出しを `point` で保留し、その間に abort して、保留を解いても要求が 1 つもホストに届かず、`NETWORK`(取消)で終わることを確かめる。 */
+    private fun assertAbortedBeforeIoSendsNothing(point: HookPoint, call: (BridgeClient) -> Unit) {
+        // 通信が起きたら、これらの応答が使われて見つかる(未使用なら要求は 0)
+        repeat(3) { server.enqueue(json("""{"session_id":"$sid","state":"listening","accepted_seq":1}""", 201)) }
+        val c = client()
+        val hooks = HoldHooks(point)
+        c.testHooks = hooks
+        val result = AtomicReference<Throwable?>()
+        val finished = CountDownLatch(1)
+        thread {
+            try {
+                call(c)
+            } catch (e: Throwable) {
+                result.set(e)
+            }
+            finished.countDown()
+        }
+        assertTrue("保留の位置に達した($point)", hooks.reached.await(3, TimeUnit.SECONDS))
+        c.abortInFlight() // 登録済み・通信前の接続に対する abort(未接続の disconnect は何もしない)
+        hooks.release.countDown()
+        assertTrue("呼び出しが戻る", finished.await(3, TimeUnit.SECONDS))
+        val e = result.get()
+        assertTrue("BridgeException(NETWORK): $e", e is BridgeException && e.kind == BridgeFailure.NETWORK)
+        assertTrue("取消は再送の対象(VoiceSession が abort 後に同じ seq を送り直す)", (e as BridgeException).isRetryable)
+        Thread.sleep(150) // 遅れて要求が出ていないことを見る
+        assertEquals("abort のあとに通信してはいけない($point): 要求が 0", 0, server.requestCount)
+    }
+
+    private fun raceCalls(): Map<String, (BridgeClient) -> Unit> = mapOf(
+        "sendAudio" to { c -> c.sendAudio(sid, 1, ByteArray(640), false) },
+        "events" to { c -> c.events(sid, null) { } },
+        "createSession" to { c -> c.createSession(request) },
+        "fetchReplyAudio" to { c -> c.fetchReplyAudio(sid, 0) },
+    )
+
+    @Test fun abortRightAfterRegistrationStopsEveryCallBeforeAnyRequest() {
+        for ((name, call) in raceCalls()) {
+            tearDown(); setUp() // 要求の数を呼び出しごとに数え直す
+            try {
+                assertAbortedBeforeIoSendsNothing(HookPoint.AFTER_REGISTER, call)
+            } catch (e: AssertionError) {
+                throw AssertionError("$name: ${e.message}", e)
+            }
+        }
+    }
+
+    @Test fun abortJustBeforeConnectStopsEveryCallBeforeAnyRequestIsSent() {
+        for ((name, call) in raceCalls()) {
+            tearDown(); setUp()
+            try {
+                assertAbortedBeforeIoSendsNothing(HookPoint.BEFORE_CONNECT, call)
+            } catch (e: AssertionError) {
+                throw AssertionError("$name: ${e.message}", e)
+            }
+        }
+    }
+
+    @Test fun anAbortedCallCannotConnectLaterButACallStartedAfterTheAbortCan() {
+        val c = client()
+        val hooks = HoldHooks(HookPoint.AFTER_REGISTER)
+        c.testHooks = hooks
+        val first = AtomicReference<Throwable?>()
+        val firstDone = CountDownLatch(1)
+        thread {
+            try {
+                c.sendAudio(sid, 1, ByteArray(640), false)
+            } catch (e: Throwable) {
+                first.set(e)
+            }
+            firstDone.countDown()
+        }
+        assertTrue(hooks.reached.await(3, TimeUnit.SECONDS))
+        c.abortInFlight()
+        // 古い呼び出しが保留のまま、abort のあとに始まった別の呼び出しは有効(新しい世代)
+        c.testHooks = null
+        server.enqueue(json("""{"state":"listening","accepted_seq":2}"""))
+        assertEquals(ChunkAck(AckState.LISTENING, 2), c.sendAudio(sid, 2, ByteArray(640), false))
+        hooks.release.countDown()
+        assertTrue(firstDone.await(3, TimeUnit.SECONDS))
+        assertEquals(BridgeFailure.NETWORK, (first.get() as BridgeException).kind)
+        assertEquals("要求は後の呼び出しの 1 つだけ", 1, server.requestCount)
+        assertEquals("2", req().getHeader("X-Chunk-Seq"))
+    }
+
+    @Test fun postIsSentExactlyOnceEvenWhenTheConnectionDropsAfterTheRequest() {
+        // JDK のバッファ型 POST は通信失敗で自動再送する。ストリーミングで送るので、1 回の呼び出しは HTTP 要求 1 回
+        val calls = mapOf<String, (BridgeClient) -> Unit>(
+            "sendAudio" to { c -> c.sendAudio(sid, 1, ByteArray(640), false) },
+            "createSession" to { c -> c.createSession(request) },
+        )
+        for ((name, call) in calls) {
+            tearDown(); setUp()
+            repeat(4) { server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)) }
+            val e = failure { call(client()) }
+            assertEquals("$name", BridgeFailure.NETWORK, e.kind)
+            assertTrue(e.isRetryable)
+            Thread.sleep(150)
+            assertEquals("$name: HTTP 要求は 1 回だけ", 1, server.requestCount)
+        }
+        // 再送は呼び出し側(VoiceSession)が同じ seq で 1 回だけする: 成功するのは次の呼び出し
+        tearDown(); setUp()
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        server.enqueue(json("""{"state":"ended","accepted_seq":3}"""))
+        val c = client()
+        assertEquals(BridgeFailure.NETWORK, failure { c.sendAudio(sid, 3, ByteArray(640), true) }.kind)
+        assertEquals(ChunkAck(AckState.ENDED, 3), c.sendAudio(sid, 3, ByteArray(640), true))
+        assertEquals(listOf("3", "3"), listOf(req(), req()).map { it.getHeader("X-Chunk-Seq") })
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun streamingPostCarriesLengthAndConnectionCloseAndNeverChunkedEncoding() {
+        server.enqueue(json("""{"state":"listening","accepted_seq":1}"""))
+        client().sendAudio(sid, 1, ByteArray(1600), false)
+        val r = req()
+        assertEquals("1600", r.getHeader("Content-Length"))
+        assertNull(r.getHeader("Transfer-Encoding"))
+        assertEquals("close", r.getHeader("Connection"))
+    }
+
+    @Test fun unauthorizedPostInStreamingModeIsAClientErrorWithStatus401() {
+        // ストリーミングの POST で 401 を受けると JDK は HttpRetryException を投げる。それを 401 の CLIENT_ERROR にする(再送しない)
+        server.enqueue(err(401, "unauthorized"))
+        val e = failure { client().sendAudio(sid, 1, ByteArray(640), false) }
+        assertEquals(BridgeFailure.CLIENT_ERROR, e.kind)
+        assertEquals(401, e.status)
+        assertFalse(e.isRetryable)
+        server.enqueue(err(401, "unauthorized"))
+        val e2 = failure { client().createSession(request) }
+        assertEquals(BridgeFailure.CLIENT_ERROR, e2.kind)
+        assertEquals(401, e2.status)
+        assertFalse("例外メッセージにトークンを含めない", e2.toString().contains(token))
+        assertEquals("401 は再送しない", 2, server.requestCount)
+        // WWW-Authenticate が付いていても同じ
+        server.enqueue(err(401, "unauthorized").setHeader("WWW-Authenticate", "Basic realm=\"x\""))
+        assertEquals(401, failure { client().sendAudio(sid, 2, ByteArray(640), false) }.status)
+        assertEquals(3, server.requestCount)
     }
 
     // =========================================================================================

@@ -47,6 +47,7 @@ class WavFormatException(val reason: WavProblem) : Exception("invalid wav: $reas
 
 /** 検証済み WAV の要約。[dataOffset] から [dataBytes] バイトが PCM16 mono のサンプル。 */
 data class WavInfo(val sampleRate: Int, val dataOffset: Int, val dataBytes: Int) {
+    /** 再生時間(ミリ秒、切り捨て)。上限の判定にはこの丸めた値でなく [WavValidator] が積で比べる */
     val durationMs: Long get() = dataBytes.toLong() * 1000 / (sampleRate.toLong() * 2)
 }
 
@@ -66,6 +67,9 @@ object WavValidator {
     const val MAX_DURATION_MS = VoiceLimits.REPLY_AUDIO_MAX_MS
     const val MIN_SAMPLE_RATE = 16_000
     const val MAX_SAMPLE_RATE = 48_000
+
+    /** mono・16bit */
+    private const val BYTES_PER_SAMPLE = 2L
 
     /** `data` より前のチャンクを含むヘッダの上限 */
     const val MAX_HEADER_BYTES = 64 * 1024
@@ -118,7 +122,8 @@ object WavValidator {
                     if (header.dataSize % 2 != 0) throw WavFormatException(WavProblem.SIZE_MISMATCH)
                     val total = header.dataOffset.toLong() + header.dataSize
                     if (total > MAX_BYTES) throw WavFormatException(WavProblem.TOO_LARGE)
-                    if (header.dataSize.toLong() * 1000 / (header.sampleRate.toLong() * 2) > MAX_DURATION_MS) {
+                    // ミリ秒に丸める前の Long の積で比べる(整数除算の後だと 120 秒をわずかに超える WAV が通る)
+                    if (header.dataSize.toLong() * 1000 > MAX_DURATION_MS * header.sampleRate.toLong() * BYTES_PER_SAMPLE) {
                         throw WavFormatException(WavProblem.TOO_LONG)
                     }
                 }

@@ -204,6 +204,31 @@ class WavValidatorTest {
         assertEquals(120_000, WavValidator.validate(wav).durationMs)
     }
 
+    @Test fun durationLimitIsComparedBeforeRoundingToMilliseconds() {
+        // 16 kHz: 120 秒ちょうど = 3,840,000 バイト。1 サンプル(2 バイト)増えると 120.00006 秒で、ミリ秒に丸めると 120000 になってしまう
+        for (rate in listOf(16_000, 24_000, 32_000, 40_000)) {
+            val limit = 120 * rate * 2
+            val ok = WavFixtures.wav(sampleRate = rate, dataBytes = limit)
+            assertEquals("$rate Hz の 120 秒ちょうどは受理", 120_000L, WavValidator.validate(ok).durationMs)
+            // 境界の 1 サンプル先は、本文を読まずに宣言だけで拒否する
+            reject(WavProblem.TOO_LONG, WavFixtures.wav(sampleRate = rate, dataBytes = 0, declaredData = (limit + 2).toLong()))
+            reject(WavProblem.TOO_LONG, WavFixtures.wav(sampleRate = rate, dataBytes = limit + 2))
+            // 1 サンプル手前も受理(ミリ秒は切り捨て)
+            val under = WavFixtures.wav(sampleRate = rate, dataBytes = limit - 2)
+            assertEquals(119_999L, WavValidator.validate(under).durationMs)
+        }
+        assertEquals(3_840_000, 120 * 16_000 * 2)
+    }
+
+    @Test fun at48kHzTheByteLimitAlwaysComesBeforeTheDurationLimit() {
+        // 48 kHz の 120 秒 = 11.52 MB > 10 MB なので、長さの上限には届く前にバイト数の上限で止まる(どちらでも拒否)
+        reject(WavProblem.TOO_LARGE, WavFixtures.wav(sampleRate = 48_000, dataBytes = 0, declaredData = (120L * 48_000 * 2 + 2)))
+        reject(WavProblem.TOO_LARGE, WavFixtures.wav(sampleRate = 48_000, dataBytes = 0, declaredData = 120L * 48_000 * 2))
+        // 10 MB の内側(109 秒)は受理
+        val max = WavValidator.MAX_BYTES - 44
+        assertTrue(WavValidator.validate(WavFixtures.wav(sampleRate = 48_000, dataBytes = max)).durationMs < 120_000)
+    }
+
     @Test fun readerReturningInTinyPiecesGivesTheSameResult() {
         val wav = WavFixtures.wav(before = WavFixtures.chunk("LIST", 30), dataBytes = 6_400)
         val slow = object : InputStream() {

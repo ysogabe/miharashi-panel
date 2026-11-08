@@ -121,8 +121,9 @@ class VoiceBridgeScenarioTest {
         }
         e.talkUntil("再送を経て ended で応答待ちへ") { e.session.phase == VoicePhase.WAITING }
         val lost = lostSeq.get()
-        val sameSeq = e.host.audioReqs.filter { it.seq == lost }
-        assertTrue("同じ seq が 2 回以上届いた(JDK の再試行か Panel の再送)", sameSeq.size >= 2)
+        // 送信 API の呼び出し回数と HTTP 要求数を区別する: JDK の暗黙の再送が無ければ、再送は VoiceSession の 1 回だけ(合計ちょうど 2 要求)
+        assertEquals("送信 API の呼び出しは元の 1 回 + 再送の 1 回", 2, e.spy.sendCalls.count { it == lost })
+        assertEquals("同じ seq の HTTP 要求は合計ちょうど 2 回(JDK の自動再送が重ならない)", 2, e.host.audioReqs.count { it.seq == lost })
         assertFalse("再送は同じ本文", mismatch.get())
         assertEquals("エラーにならない", null, e.listener.snaps.firstOrNull { it.state == VoiceState.ERROR })
         assertFalse(e.audio.recording)
@@ -131,6 +132,26 @@ class VoiceBridgeScenarioTest {
         e.player.finish(true)
         e.sim.await("DONE") { e.listener.ended.isNotEmpty() }
         assertEquals("done", e.listener.ended.single().second)
+    }
+
+    @Test fun s2_ifTheResendAlsoFailsTheSessionEndsWithoutAThirdRequest() {
+        val e = env()
+        e.start()
+        e.talk(200)
+        e.host.ackState = "speech"
+        e.talk(100)
+        val failSeq = AtomicInteger(-1)
+        e.host.onChunk = { r ->
+            failSeq.compareAndSet(-1, r.seq)
+            if (r.seq == failSeq.get()) MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) else null
+        }
+        e.talkUntil("再送も失敗して終了") { e.listener.ended.isNotEmpty() }
+        e.sim.pumpFor(300) // 遅れて 3 回目が出ていないことを見る
+        val seq = failSeq.get()
+        assertEquals("host_unreachable", e.listener.ended.single().second)
+        assertEquals("送信 API の呼び出しは 2 回で打ち切る", 2, e.spy.sendCalls.count { it == seq })
+        assertEquals("HTTP 要求も合計ちょうど 2 回(3 回目を送らない)", 2, e.host.audioReqs.count { it.seq == seq })
+        assertFalse(e.audio.recording)
     }
 
     // =========================================================================================
@@ -173,6 +194,7 @@ class VoiceBridgeScenarioTest {
             e.host.waitFor(release)
             MockResponse().setBody("""{"state":"ended","accepted_seq":${r.seq}}""")
         }
+        val retryTimersBefore = e.sim.postedDelays.count { it == 500L }
         e.talk(100, settle = false) // 次のチャンクをホストが受けて、SSE の waiting を先に流し、ack は保留する
         assertTrue(arrived.await(3, TimeUnit.SECONDS))
         e.sim.await("SSE の waiting で応答待ちへ(ack はまだ)") { e.session.phase == VoicePhase.WAITING }
@@ -182,6 +204,7 @@ class VoiceBridgeScenarioTest {
         assertEquals(VoicePhase.WAITING, e.session.phase)
         assertTrue(e.listener.snaps.none { it.state == VoiceState.ERROR })
         // SSE の区間は終端なしで閉じた → 再接続(Last-Event-ID は最後に見た seq)
+        e.sim.awaitDelayedPost(500, "再接続のタイマー", retryTimersBefore) { }
         e.sim.advance(500)
         e.sim.await("再接続") { e.host.eventRequests.size >= 2 }
         assertEquals("1", e.host.eventRequests.last())
@@ -238,10 +261,13 @@ class VoiceBridgeScenarioTest {
         e.host.ackState = "ended"
         e.talkUntil("応答待ち") { e.session.phase == VoicePhase.WAITING }
         // 区間 1: transcript まで(reply の前で切れる)
+        val retryTimersBefore = e.sim.postedDelays.count { it == 500L }
         e.host.emitAll(evt("state") { put("state", "speech") }, evt("transcript") { put("text", "やあ").put("final", true) })
         e.sim.await("transcript を受け取る") { e.listener.snaps.any { it.transcript == "やあ" } }
-        e.sim.await("区間 1 が閉じる") { e.host.eventRequests.size == 1 && e.host.segmentsClosed.get() >= 1 }
-        // 再接続(最初の待ちは 500 ms)。ホストは reply を二重に記録する(重複の再現)
+        // 区間 1 が閉じ、クライアントが EOF を処理して再接続のタイマー(最初の待ちは 500 ms)を登録し終えるのを待ってから、仮想時間を進める
+        e.sim.awaitDelayedPost(500, "区間 1 が閉じて再接続のタイマーが登録される", retryTimersBefore) { }
+        assertEquals(1, e.host.eventRequests.size)
+        // ホストは reply を二重に記録する(重複の再現)
         e.host.emitAll(evt("reply") { replyJson(e.host.replyWav.size) })
         e.host.addDuplicateOfLast()
         e.host.emitAll(evt("done") { })
@@ -254,6 +280,37 @@ class VoiceBridgeScenarioTest {
         assertEquals("重複した reply で 2 回再生しない", 1, e.player.plays)
         assertEquals(listOf(false to "done"), e.listener.ended)
         assertEquals("音声の取得も 1 回", 1, e.host.requests.count { it.path!!.endsWith("/replies/0/audio") })
+    }
+
+    /**
+     * reply を受け取ったあと、done の前に区間が閉じる。reply を受け取った後は再接続しない(返答はもう手元にあり、再生して DONE に至る)。
+     * 後から done が来ても使わない。重複して二度再生したり、再接続のために DONE が遅れたりしない。
+     */
+    @Test fun s6_sseCutAfterReplyBeforeDoneDoesNotReconnectAndStillFinishes() {
+        val e = env()
+        e.start()
+        e.talk(200)
+        e.host.ackState = "ended"
+        e.talkUntil("応答待ち") { e.session.phase == VoicePhase.WAITING }
+        e.host.emitAll(evt("reply") { replyJson(e.host.replyWav.size) }) // done は無い。区間はここで閉じる
+        e.sim.await("再生") { e.player.plays == 1 }
+        e.sim.await("区間が閉じる") { e.host.segmentsClosed.get() >= 1 }
+        e.sim.pumpFor(200)
+        e.sim.advance(4_000) // 再接続の待ち(0.5 → 1 → 2 秒)をすべて過ぎても(再生の期限 5.5 秒の手前)
+        e.sim.pumpFor(200)
+        assertEquals("再接続しない", 1, e.host.eventRequests.size)
+        assertEquals(0, e.sim.postedDelays.count { it == 500L })
+        assertEquals(VoicePhase.REPLYING, e.session.phase)
+        assertTrue("エラーにならない", e.listener.snaps.none { it.state == VoiceState.ERROR })
+        // 遅れて done がホストに記録されても(購読していないので)何も起きない
+        e.host.emitAll(evt("done") { })
+        e.sim.pumpFor(100)
+        e.player.finish(true)
+        e.sim.await("DONE") { e.listener.ended.isNotEmpty() }
+        assertEquals(listOf(false to "done"), e.listener.ended)
+        assertEquals(1, e.player.plays)
+        assertEquals("音声の取得も 1 回", 1, e.host.requests.count { it.path!!.endsWith("/replies/0/audio") })
+        assertEquals("最後まで再接続しない", 1, e.host.eventRequests.size)
     }
 
     // =========================================================================================
@@ -447,27 +504,57 @@ class VoiceBridgeScenarioTest {
     }
 
     // =========================================================================================
-    // S13 ack が毎回 300 ms かかる → 送信キューがあふれず、録音に追いつく(まとめ送り)
+    // S13 ack が遅い(入力 6 回ぶん待つ)→ 送信キューがあふれず、まとめ送りで録音に追いつく。入力は欠けず・順番を変えずに届く
 
     @Test fun s13_slowAcksAreCoalescedAndNeverOverflow() {
         val e = env()
         e.start()
         e.host.ackState = "speech"
-        e.host.ackDelayMs = 300
-        val steps = 24 // 50 ms × 24 = 1.2 秒ぶん。実時間でも 50 ms ずつ進め、仮想時間と通信の遅さを合わせる
-        repeat(steps) {
-            e.audio.feed(50)
-            e.sim.advance(50)
-            Thread.sleep(50)
+        // ack の解放をテストが制御する(実時間の sleep や通信の遅さに依存しない)
+        val gate = java.util.concurrent.Semaphore(0)
+        e.host.onChunk = {
+            while (!gate.tryAcquire(20, TimeUnit.MILLISECONDS)) if (e.host.closed.count == 0L) break
+            null // 既定の ack(speech)
         }
-        e.sim.await("追いつく") { e.host.audioReqs.sumOf { it.bytes } >= (steps - 10) * 1_600 }
+        val stepBytes = 1_600 // 50 ms
+        val steps = 24 // 1.2 秒ぶん
+        val ackEvery = 6 // 300 ms ぶんの入力ごとに 1 つの ack を返す
+        val fed = java.io.ByteArrayOutputStream()
+        var maxBacklog = 0
+        repeat(steps) { i ->
+            // 全体で通し番号の付いたサンプル(順番が入れ替わる・欠けるとバイト列が合わない)
+            val pcm = ByteArray(stepBytes)
+            for (k in 0 until stepBytes / 2) {
+                val v = (fed.size() / 2 + k) % 30_000 + 1
+                pcm[2 * k] = (v and 0xFF).toByte()
+                pcm[2 * k + 1] = ((v shr 8) and 0xFF).toByte()
+            }
+            fed.write(pcm)
+            e.audio.feedBytes(pcm)
+            e.sim.advance(50)
+            val backlog = fed.size() - e.spy.sentBytes.get() // まだ送り出していない(キューに溜まっている)バイト数
+            maxBacklog = maxOf(maxBacklog, backlog)
+            if ((i + 1) % ackEvery == 0) {
+                val started = e.spy.sendStarted.get()
+                gate.release() // 送信中のチャンクの ack を返す → 溜まった分が 1 つの要求になる
+                e.sim.await("溜まった分を次の 1 チャンクで送る") { e.spy.sendStarted.get() == started + 1 }
+                assertEquals("まとめ送りで滞留が空になる", 0, fed.size() - e.spy.sentBytes.get())
+            }
+        }
+        assertTrue("滞留は ack 6 回ぶんの入力以内($maxBacklog バイト)で、増え続けない", maxBacklog <= (ackEvery + 1) * stepBytes)
+        assertTrue("上限(2 秒分)よりずっと下", maxBacklog < VoiceLimits.QUEUE_MAX_BYTES / 4)
+        gate.release(1_000) // 残りの ack を一気に返す
+        e.sim.await("入力がすべてホストに届く") { e.host.audioReqs.sumOf { it.bytes } == fed.size() && e.spy.sendStarted.get() == e.spy.sendCompleted.get() }
+        e.sim.pumpFor(50)
         assertEquals(VoicePhase.HEARING, e.session.phase)
         assertTrue("あふれて終わっていない", e.listener.ended.isEmpty())
         assertEquals("同時に 1 リクエストだけ(直列)", 1, e.host.maxConcurrentAudio.get())
         val reqs = e.host.audioReqs.toList()
-        assertTrue("まとめ送り: 要求の数($${reqs.size})は 50 ms の入力の数($steps)より少ない", reqs.size < steps / 2)
-        assertTrue("ack を待つ間に溜まった分が 1 つの要求になる", reqs.drop(1).any { it.bytes > 4 * 1_600 })
         assertEquals("seq は連続で再送もない", (0 until reqs.size).toList(), reqs.map { it.seq })
+        assertEquals("入力全体が同じバイト列・同じ順序で届く", fed.toByteArray().toList(), reqs.flatMap { it.body.toList() })
+        assertTrue("まとめ送り: 要求の数(${reqs.size})は 50 ms の入力の数($steps)より少ない", reqs.size <= steps / 2)
+        assertTrue("ack を待つ間に溜まった分が 1 つの要求になる", reqs.drop(1).any { it.bytes > 4 * stepBytes })
+        assertTrue(reqs.all { it.bytes in VoiceLimits.CHUNK_MIN_BYTES..VoiceLimits.CHUNK_MAX_BYTES })
     }
 
     // =========================================================================================
@@ -561,8 +648,12 @@ class VoiceBridgeScenarioTest {
             }
         }
 
+        /** `postDelayed` で登録された遅延(ms)の記録。タイマーの登録が終わったことを、仮想時間を進める前に確かめるために使う */
+        val postedDelays = CopyOnWriteArrayList<Long>()
+
         override fun postDelayed(task: () -> Unit, delayMs: Long): Cancelable {
             val t = lock.withLock {
+                postedDelays += delayMs
                 Task(now + maxOf(0L, delayMs), counter++, task).also {
                     tasks += it
                     changed.signalAll()
@@ -605,6 +696,15 @@ class VoiceBridgeScenarioTest {
             pump()
         }
 
+        /**
+         * 遅延 `delayMs` のタイマーが、これから(この呼び出しより後に)新しく 1 つ登録されるまで、届いた結果を処理しながら待つ。
+         * 通信の終わり(EOF)の処理が済んでタイマーが登録されたことを保証してから、テストは仮想時間を進められる。
+         */
+        fun awaitDelayedPost(delayMs: Long, what: String, before: Int = postedDelays.count { it == delayMs }, then: () -> Unit) {
+            await(what) { postedDelays.count { it == delayMs } > before }
+            then()
+        }
+
         /** 条件が成り立つまで(実時間 `timeoutMs` まで)、届いた結果を処理しながら待つ */
         fun await(what: String, timeoutMs: Long = 8_000, cond: () -> Boolean) {
             val end = System.nanoTime() + timeoutMs * 1_000_000
@@ -644,6 +744,10 @@ class VoiceBridgeScenarioTest {
         fun feed(ms: Int, amp: Int = 1000) {
             if (rec) onPcm?.invoke(FakeAudio.pcm(ms, amp))
         }
+
+        fun feedBytes(pcm: ByteArray) {
+            if (rec) onPcm?.invoke(pcm)
+        }
     }
 
     class LiveListener(private val sim: LiveSim) : VoiceSessionListener {
@@ -673,6 +777,12 @@ class VoiceBridgeScenarioTest {
     class SpyBridge(private val inner: BridgeApi) : BridgeApi {
         val sendStarted = AtomicInteger()
         val sendCompleted = AtomicInteger()
+
+        /** 送信 API(`sendAudio`)の呼び出しごとの seq(HTTP 要求の数と区別する) */
+        val sendCalls = CopyOnWriteArrayList<Int>()
+
+        /** 送信 API に渡したバイト数の合計 */
+        val sentBytes = AtomicInteger()
         @Volatile var holdCreate: CountDownLatch? = null
         val createReturned = CountDownLatch(1)
 
@@ -693,6 +803,8 @@ class VoiceBridgeScenarioTest {
         }
 
         override fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean): ChunkAck {
+            sendCalls += seq
+            sentBytes.addAndGet(pcm.size)
             enter("send")
             return inner.sendAudio(id, seq, pcm, final)
         }

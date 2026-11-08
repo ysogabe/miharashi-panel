@@ -4,6 +4,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
+import java.net.HttpRetryException
 import java.net.HttpURLConnection
 import java.util.Collections
 import java.util.IdentityHashMap
@@ -25,8 +26,21 @@ import java.util.IdentityHashMap
  * ## 中断([abortInFlight])
  * 通信中のすべての接続(SSE を含む)を切る。どのスレッドからでも呼べる。**クライアントは壊れず**、次の呼び出しは普通に通信できる
  * (チャンクのウォッチドッグは abort のあとに同じ seq を再送し、停止は abort のあとに [cancel] を送る)。
- * 呼び出しが始まっていても接続を登録する前に abort が来たときは、登録の時点で世代の違いに気づいて中断する(取りこぼしを防ぐ)。
- * [cancel] の接続は中断の対象外で、abort の後でも送れる。
+ *
+ * 取りこぼさない仕組み(世代): クライアントは中断の世代(`epoch`)を持ち、abort はロックの中で世代を進めて、登録済みの接続をすべて切る。
+ * 各呼び出しは始まるときに世代を取り、**接続の登録と、通信を始める直前・接続が済んだ直後(本文を送る前)の 3 回、ロックの中で世代の一致を確かめる**。
+ * 一致しなければ(= その呼び出しが始まってから abort が来た)通信せず、接続を切って `NETWORK`(取消)で投げる。
+ * 未接続の `HttpURLConnection.disconnect()` は、その後の接続を禁止しない(JDK は何もしない)ので、`disconnect` だけには頼らない:
+ * 接続前の abort は直前の確認が、`connect()` の最中の abort は接続が済んだ直後の確認が拾い、いずれも本文・要求の送信より前に止める。
+ * 接続が済んだあとの abort は、登録済みの接続への `disconnect` が効く。abort より**後**に始まった呼び出しは新しい世代なので有効。
+ * [cancel] の接続は中断の対象外(登録も確認もしない)で、abort の後でも送れる。
+ *
+ * ## 送信は 1 回の呼び出しにつき HTTP 要求 1 回
+ * 本文のある POST(作成・チャンク)は、本文の長さを先に決めたストリーミング(`setFixedLengthStreamingMode`)で送る。JDK は
+ * ストリーミングの要求を自動では再送しない(バッファ型の POST は通信失敗のときに最大で何度も再送し、同じチャンクが重複して届く)。
+ * 再送は [VoiceSession] が 1 回だけ行う(§5.2.2)。ストリーミングでは `401` が `HttpRetryException` になるので、捕まえて
+ * `CLIENT_ERROR`(status 401)にする。全要求に `Connection: close` を付け、使い回した古い接続での失敗を避ける。
+ * (GET・DELETE は冪等なので、JDK が 1 回だけ黙って再送することがあっても害はない。)
  *
  * ## 期限
  * 作成・チャンク・返答音声・取消は、それぞれ自分で全体の期限(接続前から数える。[BridgeHttp.withDeadline])を持つ。既定値は
@@ -53,9 +67,20 @@ class BridgeClient(
     private var epoch = 0
     private val active: MutableSet<HttpURLConnection> = Collections.newSetFromMap(IdentityHashMap())
 
+    /** 試験用の差し込み口(競合を再現するため、登録の直後・通信を始める直前で処理を止める)。本番では null。 */
+    internal interface TestHooks {
+        /** 接続の登録の直後(通信を始める前の確認より前) */
+        fun afterRegister(path: String) {}
+
+        /** 通信を始める直前の確認のあと、`connect()` の直前 */
+        fun beforeConnect(path: String) {}
+    }
+
+    @Volatile internal var testHooks: TestHooks? = null
+
     override fun toString() = "BridgeClient(configured=$configured)"
 
-    /** 通信中の接続をすべて切る。ノンブロッキング・冪等。これから始まる呼び出しは巻き込まない(世代で見分ける)。 */
+    /** 通信中の接続をすべて切り、これまでに始まった呼び出しを取り消す。ノンブロッキング・冪等。これから始まる呼び出しは巻き込まない(世代で見分ける)。 */
     override fun abortInFlight() {
         val conns = synchronized(lock) {
             epoch++
@@ -290,8 +315,9 @@ class BridgeClient(
     private fun readMs(totalMs: Long): Int = totalMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
 
     /**
-     * 1 回の通信。接続を開き、ヘッダと本文を付け、(中断の対象なら)登録し、`handle` で応答を処理する。`totalMs` があれば全体の期限を課す。
+     * 1 回の通信(HTTP 要求 1 回)。接続を開き、ヘッダと本文を付け、(中断の対象なら)登録し、`handle` で応答を処理する。`totalMs` があれば全体の期限を課す。
      * 失敗は [BridgeException] で投げる: [Fail] はそのまま、I/O の失敗・期限・中断は `NETWORK`。接続は必ず登録を外して切る。
+     * 中断の対象の呼び出しは、始まってから abort が来ていたら通信しない(クラスの説明の「世代」)。
      */
     private fun <T> exchange(
         method: String,
@@ -318,18 +344,25 @@ class BridgeClient(
             }
             conn = c
             c.requestMethod = method
+            c.setRequestProperty("Connection", "close") // 古い接続の使い回しによる失敗を避ける(JDK は "close" だけ許す)
             for ((k, v) in headers) c.setRequestProperty(k, v)
             if (body != null) {
                 c.doOutput = true
                 c.setRequestProperty("Content-Type", contentType)
+                c.setFixedLengthStreamingMode(body.size) // 自動の再送をさせない(再送は VoiceSession が 1 回だけ)
             }
             if (abortable) {
-                val aborted = synchronized(lock) {
-                    if (epoch != startEpoch) true else { active.add(c); false }
+                val registered = synchronized(lock) {
+                    if (epoch != startEpoch) false else { active.add(c); true }
                 }
-                if (aborted) throw IOException("aborted") // 呼び出しが始まってから登録するまでの間に abort が来た
+                if (!registered) throw IOException("aborted") // 呼び出しが始まってから登録するまでの間に abort が来た
+                testHooks?.afterRegister(path)
+                ensureNotAborted(c, startEpoch) // 通信を始める直前の確認
             }
             val io = {
+                if (abortable) testHooks?.beforeConnect(path)
+                c.connect() // 要求はまだ送らない(JDK は getOutputStream / getInputStream で送る)
+                if (abortable) ensureNotAborted(c, startEpoch) // connect の最中に来た abort(disconnect は効かない)を、本文を送る前に拾う
                 if (body != null) c.outputStream.use { it.write(body) }
                 handle(c)
             }
@@ -338,6 +371,9 @@ class BridgeClient(
             throw e.error
         } catch (e: BridgeException) {
             throw e
+        } catch (e: HttpRetryException) {
+            // ストリーミングの要求で 401(認証のやり直し)を受けると JDK はこれを投げる。本文は読まない。401 などの 4xx は再送しない失敗
+            throw BridgeException(BridgeFailure.CLIENT_ERROR, status = e.responseCode())
         } catch (e: IOException) {
             throw BridgeException(BridgeFailure.NETWORK, cause = e)
         } catch (_: RuntimeException) {
@@ -352,6 +388,17 @@ class BridgeClient(
                 }
             }
         }
+    }
+
+    /** 世代が変わっていれば(この呼び出しが始まってから abort が来た)、接続を切って中断として投げる。 */
+    private fun ensureNotAborted(c: HttpURLConnection, startEpoch: Int) {
+        val aborted = synchronized(lock) { epoch != startEpoch }
+        if (!aborted) return
+        try {
+            c.disconnect()
+        } catch (_: RuntimeException) {
+        }
+        throw IOException("aborted")
     }
 
     /** 期待したステータス以外。本文(4 KB まで)から `error.code` / `error.message` を取り出して分類し、投げる。 */

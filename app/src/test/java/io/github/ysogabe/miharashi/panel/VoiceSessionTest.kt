@@ -659,6 +659,65 @@ class VoiceSessionTest {
     }
 
     @Test
+    fun playbackDeadlineFollowsTheActualWavLengthNotTheDeclaredOne_declaredShorter() {
+        // 宣言 1 秒・実際 20 秒の正常な WAV は、20 秒 + 5 秒の期限で最後まで再生される(途中で止めない)
+        val r = Rig()
+        r.bridge.fetchReply = { ok(WavFixtures.valid(ms = 20_000, rate = 16_000)) }
+        r.startAndListen()
+        r.reply(audio = ReplyAudioInfo("wav", 16_000, 640_044, 1_000))
+        assertEquals(VoicePhase.REPLYING, r.phase)
+        r.advance(1_000 + 5_000) // 宣言どおりの期限(6 秒)では止まらない
+        assertEquals(VoicePhase.REPLYING, r.phase)
+        r.advance(18_999) // 実際の長さ + 5 秒の直前(24.999 秒)
+        assertEquals(VoicePhase.REPLYING, r.phase)
+        r.advance(1)
+        assertEquals("実際の長さ + 5 秒で停止して DONE", VoicePhase.DONE, r.phase)
+        assertNull(r.last.error)
+    }
+
+    @Test
+    fun playbackFinishingAfterTheDeclaredButBeforeTheActualDeadlineIsAnOrdinaryDone() {
+        val r = Rig()
+        r.bridge.fetchReply = { ok(WavFixtures.valid(ms = 20_000, rate = 16_000)) }
+        r.startAndListen()
+        r.reply(audio = ReplyAudioInfo("wav", 16_000, 640_044, 1_000))
+        r.advance(20_000)
+        assertEquals(VoicePhase.REPLYING, r.phase)
+        assertEquals(0, r.player.stopCount)
+        r.player.finish(true)
+        r.sim.settle()
+        assertEquals(VoicePhase.DONE, r.phase)
+        assertNull(r.last.error)
+    }
+
+    @Test
+    fun playbackDeadlineFollowsTheActualWavLengthNotTheDeclaredOne_declaredLonger() {
+        // 宣言 60 秒・実際 2 秒: 期限は実データの 2 + 5 = 7 秒(宣言の 65 秒まで待たない)
+        val r = Rig()
+        r.bridge.fetchReply = { ok(WavFixtures.valid(ms = 2_000, rate = 16_000)) }
+        r.startAndListen()
+        r.reply(audio = ReplyAudioInfo("wav", 16_000, 1_920_000, 60_000))
+        r.advance(6_999)
+        assertEquals(VoicePhase.REPLYING, r.phase)
+        r.advance(1)
+        assertEquals(VoicePhase.DONE, r.phase)
+        assertNull("食い違いはエラーにしない", r.last.error)
+    }
+
+    @Test
+    fun playbackDeadlineFallsBackToTheDeclaredLengthWhenTheBytesAreNotReadableAsWav() {
+        // 実クライアントは検証済みの WAV を返す。そうでないバイト列(試験のフェイク)のときだけ宣言を使う
+        val r = Rig()
+        r.bridge.fetchReply = { ok(ByteArray(2000)) }
+        r.startAndListen()
+        r.reply(audio = ReplyAudioInfo("wav", 24_000, 2000, 4_200))
+        r.advance(9_199)
+        assertEquals(VoicePhase.REPLYING, r.phase)
+        r.advance(1)
+        assertEquals(VoicePhase.DONE, r.phase)
+    }
+
+    @Test
     fun playbackIsCappedAt120Seconds() {
         val r = Rig()
         r.startAndListen()

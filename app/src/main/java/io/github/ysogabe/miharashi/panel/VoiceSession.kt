@@ -636,7 +636,7 @@ class VoiceSession(
             finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "reply audio size")
             return
         }
-        val duration = replyAudio?.durationMs ?: VoiceLimits.REPLY_AUDIO_MAX_MS
+        val duration = playbackMs(wav)
         arm(Timer.PLAYBACK, minOf(duration + VoiceLimits.PLAYBACK_MARGIN_MS, VoiceLimits.REPLY_AUDIO_MAX_MS)) {
             finishDone(null, "playback timeout") // 停止して DONE
         }
@@ -646,6 +646,18 @@ class VoiceSession(
             finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.diagnostics("play", e))
         }
     }
+
+    /**
+     * 再生の期限のもとにする長さ。**実データから求める**(宣言の `duration_ms` は参考: 「宣言 1 秒・実際 20 秒」の正常な WAV を途中で止めない)。
+     * 宣言と食い違っていてもエラーにせず実データを採用する。上限(120 秒)は検証済みの WAV なら [WavValidator] が保証している。
+     * 検証済みでない(WAV として読めない)バイト列のときだけ、宣言を使う(実クライアントは常に検証済みを返す)。
+     */
+    private fun playbackMs(wav: ByteArray): Long =
+        try {
+            WavValidator.validate(wav).durationMs
+        } catch (_: WavFormatException) {
+            replyAudio?.durationMs ?: VoiceLimits.REPLY_AUDIO_MAX_MS
+        }
 
     private fun onPlaybackDone(g: Int, ok: Boolean) {
         if (g != gen || _phase != VoicePhase.REPLYING) return
