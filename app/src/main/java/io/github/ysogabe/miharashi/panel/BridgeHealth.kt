@@ -143,7 +143,14 @@ internal object BridgeHttp {
      * 呼び出し側は [IOException] と [RuntimeException] のメッセージを見ずに分類する。
      */
     @Throws(IOException::class)
-    fun open(baseUrl: String, path: String, token: String, connectTimeoutMs: Int, readTimeoutMs: Int): HttpURLConnection {
+    fun open(
+        baseUrl: String,
+        path: String,
+        token: String,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        accept: String = "application/json",
+    ): HttpURLConnection {
         if (token.isEmpty() || !Settings.isBridgeTokenCharset(token)) throw IOException("invalid bridge token")
         return (URL(Settings.normalizeDaidaiUrl(baseUrl) + path).openConnection() as HttpURLConnection).apply {
             connectTimeout = connectTimeoutMs
@@ -151,7 +158,48 @@ internal object BridgeHttp {
             useCaches = false
             instanceFollowRedirects = false
             setRequestProperty("Authorization", "Bearer $token")
-            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Accept", accept)
+        }
+    }
+
+    /** エラー応答の `error.code` / `error.message`(§5.2.0)。どちらも検証・整形済みで、無ければ null。 */
+    data class HostError(val code: String?, val message: String?) {
+        /** `message` は診断の 1 行にだけ使う文字列なので、ログ・例外に出さないよう `toString` では長さだけにする */
+        override fun toString() = "HostError(code=$code, messageChars=${message?.length ?: 0})"
+    }
+
+    val NO_HOST_ERROR = HostError(null, null)
+
+    private val HOST_CODE_REGEX = Regex("^[A-Za-z0-9_.-]{1,64}$")
+
+    /** 診断に残すホストの `message` の最大の長さ */
+    const val HOST_MESSAGE_MAX_CHARS = 200
+
+    /**
+     * エラー応答(4xx/5xx)の本文を 4 KB まで読んで [HostError] を取り出す。本文が無い・4 KB 超・JSON でない・形が違うときは [NO_HOST_ERROR]
+     * (分類は HTTP ステータスで行う)。読み取りの失敗(切断・期限)も握りつぶす: 呼び出し側の期限と中断は、その後の読みや `disconnect` で効く。
+     */
+    fun readHostError(c: HttpURLConnection): HostError {
+        val body = try {
+            if (c.contentLengthLong > MAX_BODY_BYTES) return NO_HOST_ERROR
+            c.errorStream?.let { readBounded(it, MAX_BODY_BYTES) }
+        } catch (_: IOException) {
+            null
+        } catch (_: RuntimeException) {
+            null
+        } ?: return NO_HOST_ERROR
+        return parseHostError(body)
+    }
+
+    fun parseHostError(body: ByteArray): HostError {
+        return try {
+            val e = JSONObject(String(body, Charsets.UTF_8)).opt("error") as? JSONObject ?: return NO_HOST_ERROR
+            val code = (e.opt("code") as? String)?.takeIf { HOST_CODE_REGEX.matches(it) }
+            val message = (e.opt("message") as? String)
+                ?.let { DaidaiText.clean(it, HOST_MESSAGE_MAX_CHARS, keepNewlines = false) }?.takeIf { it.isNotEmpty() }
+            HostError(code, message)
+        } catch (_: Exception) {
+            NO_HOST_ERROR
         }
     }
 
