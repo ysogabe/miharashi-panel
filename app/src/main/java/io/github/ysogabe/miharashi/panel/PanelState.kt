@@ -55,6 +55,8 @@ data class KioskStatus(
      * 古いキオスク(keys を返さない)では null で、パネルは汎用のラベルで出す
      */
     val keys: Map<String, String?>? = null,
+    /** だいだい連携の通知(設計書 §5.3)。`daidai` を返さない本体、または壊れたブロックでは null */
+    val daidai: DaidaiInfo? = null,
 ) {
     val currentScreen: ScreenInfo? get() = current?.let { screens.getOrNull(it) }
 
@@ -113,6 +115,8 @@ data class KioskStatus(
                         ?: screens.indexOfFirst { it.id == m.optString("id") }.takeIf { it >= 0 }
                 },
                 keys = keys?.let { k -> KEY_NAMES.associateWith { k.optStringOrNull(it) } },
+                // 外部入力。壊れていても status 全体は読めたものとして、daidai だけ null にする
+                daidai = DaidaiInfo.parse(o.opt("daidai")),
             )
         }
 

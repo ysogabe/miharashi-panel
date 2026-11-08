@@ -174,7 +174,13 @@ class SettingsActivity : Activity() {
             result.text = "暗闇の照度は 0〜100 lx の数値"
             return
         }
-        settings.save(u, t, minutes, autoBrightness.isChecked, darkOff.isChecked, threshold)
+        try {
+            settings.save(u, t, minutes, autoBrightness.isChecked, darkOff.isChecked, threshold)
+        } catch (e: IllegalArgumentException) {
+            // 保存済みのだいだいのトークンと同じ値は保存できない(メッセージにトークンの値は含まれない)
+            result.text = e.message ?: "保存できない設定"
+            return
+        }
         finish()
     }
 }
