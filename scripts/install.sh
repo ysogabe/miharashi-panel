@@ -67,6 +67,75 @@ read_token() {
     tr -d '\r\n' < "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
+# 空白の文字(ASCII)。Settings の trim() が落とす範囲のうち、シェルで扱えるもの(スペース・タブ・改行・CR・FF・VT・0x1C〜0x1F)
+SP=' '
+TAB=$(printf '\t')
+LF=$(printf '\nx'); LF=${LF%x}
+CR=$(printf '\r')
+FF=$(printf '\f')
+VT=$(printf '\v')
+FS=$(printf '\034')
+GS=$(printf '\035')
+RS=$(printf '\036')
+US=$(printf '\037')
+WS_CHARS="$SP$TAB$LF$CR$FF$VT$FS$GS$RS$US"
+
+# $1 の前後の空白を落として標準出力へ(末尾の改行も残さず、そのまま出す)
+trim_ws() {
+    tw=$1
+    while [ -n "$tw" ]; do
+        first=${tw%"${tw#?}"}
+        case "$WS_CHARS" in *"$first"*) tw=${tw#?} ;; *) break ;; esac
+    done
+    while [ -n "$tw" ]; do
+        last=${tw#"${tw%?}"}
+        case "$WS_CHARS" in *"$last"*) tw=${tw%?} ;; *) break ;; esac
+    done
+    printf '%s' "$tw"
+}
+
+# XML の文字参照に直す(& < > " ')。URL のように、Settings が受け付ける文字をそのまま書けない場所で使う
+xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\\&apos;/g"
+}
+
+# IPv6 リテラル($1 = 角括弧の内側)が妥当か。Settings の検証(java.net.URL がホストとして読めるか)に合わせる:
+# 16 進のグループ(先頭の 0 を除いて 4 桁まで)をコロンで区切る、`::` は 1 回まで(省略は 0 グループ以上、全体で 8 グループ未満)、
+# 省略しなければちょうど 8 グループ。最後のグループだけ IPv4 の 4 つ組(各 0〜255)にでき、2 グループ分に数える。
+valid_ipv6() {
+    printf '%s\n' "$1" | LC_ALL=C awk '
+        function hexgrp(g,   t) { if (g !~ /^[0-9A-Fa-f]+$/) return 0; t = g; sub(/^0+/, "", t); return length(t) <= 4 }
+        function v4(g,   p, n, i, o) {
+            if (g !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return 0
+            n = split(g, p, ".")
+            for (i = 1; i <= n; i++) { o = p[i]; sub(/^0+/, "", o); if (length(o) > 3 || o + 0 > 255) return 0 }
+            return 1
+        }
+        # list = コロン区切りのグループ列。グループ数を返す(不正は -1)。last_v4 = 最後のグループを IPv4 にしてよいか
+        function count(list, last_v4,   g, n, i, total) {
+            if (list == "") return 0
+            n = split(list, g, ":")
+            total = 0
+            for (i = 1; i <= n; i++) {
+                if (i == n && last_v4 && v4(g[i])) total += 2
+                else if (hexgrp(g[i])) total += 1
+                else return -1
+            }
+            return total
+        }
+        {
+            s = $0
+            idx = index(s, "::")
+            if (idx == 0) { exit (count(s, 1) == 8 ? 0 : 1) }
+            head = substr(s, 1, idx - 1)
+            tail = substr(s, idx + 2)
+            if (index(tail, "::") > 0) exit 1
+            a = count(head, 0); b = count(tail, 1)
+            if (a < 0 || b < 0 || a + b > 7) exit 1
+            exit 0
+        }'
+}
+
 reject_xml_chars() { # $1=名前 $2=値
     case "$2" in
         *[\"\<\>\&\']*) echo "$1 に XML の特殊文字(\" < > & ')がある" >&2; exit 2 ;;
@@ -104,8 +173,13 @@ if [ -n "$DTOKEN_FILE" ]; then
     fi
 fi
 
+# URL は Settings と同じ規則で受け付ける(前後の空白は落とす。空は「未設定」)。XML の特殊文字(& < > " ')はこの規則では拒否せず、
+# 書き込むときに文字参照へ直す(Settings が読み戻すと元の URL になる)。トークンは XML の特殊文字を拒否したまま。
+if [ "$DURL_SET" = 1 ]; then DURL=$(trim_ws "$DURL"); fi
 if [ "$DURL_SET" = 1 ] && [ -n "$DURL" ]; then
-    reject_xml_chars "だいだいの URL" "$DURL"
+    case "$DURL" in
+        *"$LF"*) echo "--daidai-url に空白・制御文字・バックスラッシュは使えない" >&2; exit 2 ;;
+    esac
     while :; do
         case "$DURL" in */) DURL=${DURL%/} ;; *) break ;; esac
     done
@@ -136,7 +210,13 @@ if [ "$DURL_SET" = 1 ] && [ -n "$DURL" ]; then
                 :*) dport=${drest#:}; dcolon=1 ;;
                 *) echo "--daidai-url のホストが正しくない" >&2; exit 2 ;;
             esac
-            if ! printf '%s' "$dhost" | LC_ALL=C grep -Eq '^\[[0-9A-Fa-f:.]+\]$'; then
+            case "$authority" in
+                *\]*) ;;
+                *) echo "--daidai-url のホスト(IPv6)が正しくない" >&2; exit 2 ;;
+            esac
+            v6=${dhost#[}
+            v6=${v6%]}
+            if ! valid_ipv6 "$v6"; then
                 echo "--daidai-url のホスト(IPv6)が正しくない" >&2; exit 2
             fi
             ;;
@@ -242,6 +322,8 @@ if [ -n "$URL" ] || [ -n "$TOKEN" ] || [ -n "$SLEEP" ] || [ "$DURL_SET" = 1 ] ||
                 { skip = 0; for (i = 1; i <= n; i++) if (index($0, pat[i])) skip = 1; if (!skip) print }'
         })
 
+    DURL_XML=$(xml_escape "$DURL")
+
     emit_xml() { # $1 = mask なら値を伏せる
         printf '%s\n' '<?xml version="1.0" encoding="utf-8" standalone="yes" ?>'
         printf '%s\n' '<map>'
@@ -252,7 +334,7 @@ if [ -n "$URL" ] || [ -n "$TOKEN" ] || [ -n "$SLEEP" ] || [ "$DURL_SET" = 1 ] ||
             else printf '    <string name="token">%s</string>\n' "$TOKEN"; fi
         fi
         if [ -n "$SLEEP" ]; then printf '    <int name="sleep_minutes" value="%s" />\n' "$SLEEP"; fi
-        if [ "$DURL_SET" = 1 ]; then printf '    <string name="daidai_url">%s</string>\n' "$DURL"; fi
+        if [ "$DURL_SET" = 1 ]; then printf '    <string name="daidai_url">%s</string>\n' "$DURL_XML"; fi
         if [ -n "$DTOKEN" ]; then
             if [ "${1:-}" = mask ]; then printf '    <string name="daidai_token">%s</string>\n' '***'
             else printf '    <string name="daidai_token">%s</string>\n' "$DTOKEN"; fi

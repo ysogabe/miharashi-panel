@@ -605,12 +605,24 @@ class BridgeClientTest {
 
     // ---- 素の ServerSocket によるストリーミング(MockWebServer では作れない動き)
 
-    /** 1 接続だけ受けて、リクエストヘッダを読み、`script` に任せる。 */
-    private class RawServer(script: (Socket, List<String>) -> Unit) : AutoCloseable {
+    /**
+     * 1 接続だけ受けて、リクエストヘッダを読み、`script` に任せる。
+     * 「接続を開けたまま待つ」台本は sleep ではなく、台本の第 3 引数のラッチ(`close` で開く)を待つ。
+     * `close` は待受と受理済みのソケットを閉じ、ワーカーが終わったことまで確かめる(テスト終了後にスレッドを残さない)。
+     */
+    private class RawServer(script: (Socket, List<String>, CountDownLatch) -> Unit) : AutoCloseable {
         val socket = ServerSocket(0)
+        private val closing = CountDownLatch(1)
+        private val lock = Any()
+        private var accepted: Socket? = null
+        private var closed = false
         private val worker = thread(isDaemon = true) {
             try {
                 socket.accept().use { s ->
+                    synchronized(lock) {
+                        accepted = s
+                        if (closed) s.close()
+                    }
                     val r = s.getInputStream().bufferedReader(Charsets.ISO_8859_1)
                     val head = mutableListOf<String>()
                     while (true) {
@@ -618,15 +630,21 @@ class BridgeClientTest {
                         if (l.isEmpty()) break
                         head += l
                     }
-                    script(s, head)
+                    script(s, head, closing)
                 }
             } catch (_: Exception) {
             }
         }
         val url get() = "http://127.0.0.1:${socket.localPort}"
         override fun close() {
+            closing.countDown()
+            synchronized(lock) {
+                closed = true
+                accepted?.close()
+            }
             socket.close()
-            worker.join(2_000)
+            worker.join(5_000)
+            assertFalse("RawServer のワーカーが close のあとに残っている", worker.isAlive)
         }
     }
 
@@ -638,11 +656,11 @@ class BridgeClientTest {
 
     @Test fun eventsAreDeliveredAsTheyArriveAndReturnRightAfterTheTerminalEvent() {
         val release = CountDownLatch(1)
-        RawServer { s, _ ->
+        RawServer { s, _, closing ->
             s.write(sseHead + ev("state", """{"seq":0,"state":"speech"}""", 0))
             release.await(5, TimeUnit.SECONDS)
             s.write(ev("done", """{"seq":1}""", 1))
-            Thread.sleep(5_000) // 終端のあとも接続を開けたままにする(戻りは EOF を待たない)
+            closing.await() // 終端のあとも接続を開けたままにする(戻りは EOF を待たない。close で解く)
         }.use { raw ->
             val first = CountDownLatch(1)
             val got = java.util.concurrent.CopyOnWriteArrayList<BridgeEvent>()
@@ -668,7 +686,7 @@ class BridgeClientTest {
 
     @Test fun keepaliveCommentsKeepTheReadAliveAndSilenceTimesOut() {
         // 読み取りタイムアウト 400 ms に対して 150 ms ごとの keepalive を 1.2 秒続け、そのあと正常に閉じる
-        RawServer { s, _ ->
+        RawServer { s, _, _ ->
             s.write(sseHead)
             repeat(8) { s.write(": keepalive\n\n"); Thread.sleep(150) }
             s.write(ev("state", """{"seq":0,"state":"waiting"}""", 0))
@@ -678,18 +696,18 @@ class BridgeClientTest {
             assertEquals(listOf<BridgeEvent>(BridgeEvent.State(0, HostState.WAITING)), got)
         }
         // 何も来ないと読み取りタイムアウトで NETWORK
-        RawServer { s, _ ->
+        RawServer { s, _, closing ->
             s.write(sseHead)
-            Thread.sleep(30_000) // 台本は close で打ち切られる(ワーカーは daemon。close は 2 秒しか待たない)
+            closing.await() // 無音のまま接続を保つ。台本は close(ラッチ)で解かれて終わる
         }.use { raw ->
             val t0 = System.nanoTime()
             assertEquals(BridgeFailure.NETWORK, failure { client(base = raw.url, eventsReadMs = 300).events(sid, null) { } }.kind)
-            assertTrue("読み取りタイムアウトで戻る(サーバーの待ち 30 秒のほうではない)", (System.nanoTime() - t0) / 1_000_000 < 20_000)
+            assertTrue("読み取りタイムアウトで戻る(サーバーはまだ接続を保っている)", (System.nanoTime() - t0) / 1_000_000 < 20_000)
         }
     }
 
     @Test fun halfWrittenEventAtEofIsNotDelivered() {
-        RawServer { s, _ ->
+        RawServer { s, _, _ ->
             s.write(sseHead + ev("state", """{"seq":0,"state":"speech"}""", 0) + "id: 1\nevent: transcript\ndata: {\"seq\":1,\"te")
         }.use { raw ->
             val got = mutableListOf<BridgeEvent>()
@@ -703,16 +721,22 @@ class BridgeClientTest {
      * (JDK の `disconnect()` は Content-Length・chunked の応答を読んでいる最中だとその読みが終わるまで戻らないので、
      * 「読みが止まった SSE」は終端の無い素の応答で再現し、同じインスタンスの後続の通信も同じサーバーで受ける。)
      */
-    private class MultiRawServer(first: (Socket) -> Unit, routes: (String) -> ByteArray) : AutoCloseable {
+    private class MultiRawServer(first: (Socket, CountDownLatch) -> Unit, routes: (String) -> ByteArray) : AutoCloseable {
         val socket = ServerSocket(0)
         val requestLines = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+        /** [close] で開く。`first` の「接続を保ったまま待つ」はこのラッチを待つ(sleep ではない) */
+        private val closing = CountDownLatch(1)
+        private val connections = java.util.concurrent.CopyOnWriteArrayList<Socket>()
+        private val handlers = java.util.concurrent.CopyOnWriteArrayList<Thread>()
         private val acceptor = thread(isDaemon = true) {
             var n = 0
             try {
                 while (true) {
                     val s = socket.accept()
+                    connections += s
                     val index = n++
-                    thread(isDaemon = true) {
+                    handlers += thread(isDaemon = true) {
                         try {
                             s.use {
                                 val input = it.getInputStream()
@@ -726,7 +750,7 @@ class BridgeClientTest {
                                 requestLines += lines[0]
                                 val len = lines.firstOrNull { l -> l.startsWith("Content-Length:", ignoreCase = true) }?.substringAfter(':')?.trim()?.toInt() ?: 0
                                 repeat(len) { input.read() }
-                                if (index == 0) first(it) else it.getOutputStream().apply { write(routes(lines[0])); flush() }
+                                if (index == 0) first(it, closing) else it.getOutputStream().apply { write(routes(lines[0])); flush() }
                             }
                         } catch (_: Exception) {
                         }
@@ -736,9 +760,16 @@ class BridgeClientTest {
             }
         }
         val url get() = "http://127.0.0.1:${socket.localPort}"
+
+        /** 待受と受理済みの接続を閉じ、受付と各接続のスレッドが終わったことまで確かめる(テスト終了後にスレッドを残さない) */
         override fun close() {
+            closing.countDown()
             socket.close()
-            acceptor.join(2_000)
+            acceptor.join(5_000)
+            for (c in connections) runCatching { c.close() }
+            for (h in handlers) h.join(5_000)
+            assertFalse("MultiRawServer の受付スレッドが close のあとに残っている", acceptor.isAlive)
+            assertFalse("MultiRawServer の接続スレッドが close のあとに残っている", handlers.any { it.isAlive })
         }
     }
 
@@ -750,10 +781,10 @@ class BridgeClientTest {
         val sseBody = ev("state", """{"seq":0,"state":"speech"}""", 0) + ev("done", """{"seq":1}""", 1)
         val wav = WavFixtures.valid(ms = 100)
         MultiRawServer(
-            first = { s ->
+            first = { s, closing ->
                 s.write(sseHead + ": hello\n\n")
                 connected.countDown()
-                Thread.sleep(10_000)
+                closing.await() // サーバーは止まったまま(close で解く)
             },
             routes = { line ->
                 when {
@@ -779,7 +810,7 @@ class BridgeClientTest {
             Thread.sleep(100)
             val t0 = System.nanoTime()
             c.abortInFlight()
-            assertTrue("abort で SSE の読みが戻る(サーバーは 10 秒止まったまま)", finished.await(8, TimeUnit.SECONDS))
+            assertTrue("abort で SSE の読みが戻る(サーバーは止まったまま)", finished.await(8, TimeUnit.SECONDS))
             assertTrue((System.nanoTime() - t0) / 1_000_000 < 8_000)
             assertEquals(BridgeFailure.NETWORK, (result.get() as BridgeException).kind)
             // abort のあとも、SSE を中断した同じインスタンスが普通に通信できる(abort 前に始まった呼び出しだけが無効で、あとに始めた呼び出しは有効)
@@ -1018,11 +1049,24 @@ class BridgeClientTest {
         assertNull("abort されずに 204 を受け取る", result.get())
     }
 
-    @Test fun cancelHasItsOwnShortDeadline() {
-        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)) // 永久に応答しない
-        val t0 = System.nanoTime()
-        assertEquals(BridgeFailure.NETWORK, failure { client(cancelMs = 300).cancel(sid) }.kind)
-        assertTrue("取消の期限(0.3 秒)で戻る。既定の取消の期限 3 秒より前", (System.nanoTime() - t0) / 1_000_000 < 15_000)
+    @Test fun cancelUsesTheDeadlineItWasGiven() {
+        // 応答しない相手に、指定した期限(300 ms / 900 ms)で戻る。既定の取消の期限(3 秒)でも、固定の長い上限でもない。
+        // 下限は「指定した期限より早く失敗していない(別の理由の即時失敗ではない)」、上限は「指定値 + 余裕」で、
+        // 900 ms の上限(2.4 秒)でも既定の 3 秒より明確に短い。余裕は期限そのもの(実時間)ではなく、固定の 1.5 秒だけ。
+        for (cancelMs in listOf(300L, 900L)) {
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)) // 永久に応答しない
+            val t0 = System.nanoTime()
+            assertEquals(BridgeFailure.NETWORK, failure { client(cancelMs = cancelMs).cancel(sid) }.kind)
+            val elapsed = (System.nanoTime() - t0) / 1_000_000
+            assertTrue("指定した期限($cancelMs ms)より早く失敗している($elapsed ms)", elapsed >= cancelMs * 8 / 10)
+            assertTrue("指定した期限($cancelMs ms)で戻る($elapsed ms)。既定の取消の期限 3 秒ではない", elapsed < cancelMs + 1_500)
+            req()
+        }
+    }
+
+    @Test fun cancelHasAShortDefaultDeadlineOfItsOwn() {
+        // 既定の取消の期限は 3 秒(`cancelUsesTheDeadlineItWasGiven` の上限が「既定より短い」ことの基準)
+        assertEquals(3_000L, BridgeClient.CANCEL_TIMEOUT_MS)
     }
 
     // =========================================================================================

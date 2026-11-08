@@ -181,27 +181,27 @@ class DaidaiUnreadTest {
 
     // --- 新着の検出は件数ではなく通知 id の新規出現(窓の入れ替わり) ---
 
-    @Test fun windowRollOverWithSameUnreadCountRestartsTheTwoSeconds() {
+    @Test fun windowRollOverWithSameUnreadCountKeepsOldDeadlinesAndCountsTheNewcomerFromItsArrival() {
         val h = Harness()
         h.start()
         h.feed(status(1, ack = false, unseen = null, "n5", "n4", "n3", "n2", "n1"))
         assertEquals(5, h.shown)
-        h.enterB()
+        h.enterB() // 表示開始 = B の確定時刻(1000)
         h.advance(1_900)
         h.feed(status(2, ack = false, unseen = null, "n6", "n5", "n4", "n3", "n2")) // n1 が窓から落ち、n6 が来る(未読 5 → 5)
-        assertEquals(5, h.shown)
-        h.advance(100) // 元の期限(入場から 2 秒)
+        assertEquals("件数は同じでも n6 は新着", 5, h.shown)
+        h.advance(100) // n5..n2 は入場から 2 秒
         h.controller.tick(h.now)
-        assertEquals("元の期限では既読にならない(n6 はまだ見せていない)", 5, h.shown)
-        h.advance(1_799) // 新着から 1.899 秒
+        assertEquals("古い未読の期限は新着で延びない。n6 だけ残る", 1, h.shown)
+        h.advance(1_799) // n6 は 1.899 秒
         h.controller.tick(h.now)
-        assertEquals(5, h.shown)
-        h.advance(101) // 新着からちょうど 2 秒
+        assertEquals(1, h.shown)
+        h.advance(101) // n6 が 2 秒ちょうど
         h.controller.tick(h.now)
         assertEquals("新着自身の 2 秒表示後に既読", 0, h.shown)
     }
 
-    @Test fun hostManagedSameUnseenWithRolledWindowRestartsTheTwoSecondsAndAcksTheNewest() {
+    @Test fun hostManagedSameUnseenWithRolledWindowAcksTheNewestElapsedEachTime() {
         val h = Harness()
         h.start()
         h.feed(status(1, ack = true, unseen = 5, "n5", "n4", "n3", "n2", "n1"))
@@ -210,14 +210,175 @@ class DaidaiUnreadTest {
         h.feed(status(2, ack = true, unseen = 5, "n6", "n5", "n4", "n3", "n2")) // unseen は 5 のまま
         h.advance(100)
         h.controller.tick(h.now)
-        assertEquals(5, h.shown)
-        assertTrue("元の期限では ack しない", h.acks.isEmpty())
+        assertEquals("入場から 2 秒たった n5 までを、最新(n5)の id で 1 回 ack", listOf("n5"), h.acks)
+        assertEquals("n6 はまだ数えている(ホストの unseen の更新を待たず、残りだけ出す)", 1, h.shown)
         h.advance(1_899)
         h.controller.tick(h.now)
-        assertTrue(h.acks.isEmpty())
+        assertEquals(listOf("n5"), h.acks)
         h.advance(1)
         h.controller.tick(h.now)
-        assertEquals("新着(n6)の 2 秒後に、最新の id を ack", listOf("n6"), h.acks)
+        assertEquals("n6 の 2 秒後に n6 を ack", listOf("n5", "n6"), h.acks)
+        assertEquals(0, h.shown)
+    }
+
+    // --- 通知 id ごとの表示開始(既読の再出現・新着が続く場合・B を見ていない間) ---
+
+    @Test fun readIdReappearingInTheWindowNeitherBecomesUnreadNorDelaysTheOthers() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n0"))
+        h.enterB()
+        h.advance(2_000)
+        h.controller.tick(h.now)
+        assertEquals("n0 は既読", 0, h.shown)
+        h.feed(status(2, ack = false, unseen = null, "n1", "n0"))
+        assertEquals("n1 だけ未読", 1, h.shown)
+        val n1Start = h.now
+        // n0 が窓から落ちて戻る、を 2 秒未満の間隔で繰り返す(n1 は表示し続ける)。n1 は表示開始から 2 秒ちょうどで既読になる
+        var rev = 3L
+        var present = true
+        while (h.now - n1Start < 2_000) {
+            h.advance(400)
+            present = !present
+            h.feed(if (present) status(rev++, ack = false, unseen = null, "n1", "n0") else status(rev++, ack = false, unseen = null, "n1"))
+            h.controller.tick(h.now)
+            val elapsed = h.now - n1Start
+            assertEquals("n0 の出入りがあっても n1 は表示開始から 2 秒($elapsed ms)で既読", if (elapsed >= 2_000) 0 else 1, h.shown)
+        }
+        assertEquals(n1Start + 2_000, h.now)
+        h.advance(400)
+        h.feed(status(rev, ack = false, unseen = null, "n1", "n0"))
+        assertEquals("既読の再出現は未読にならない", 0, h.shown)
+    }
+
+    @Test fun readIdReappearingDoesNotExtendTheDeadlineOfTheNewestUnread() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n0"))
+        h.enterB()
+        h.advance(2_000)
+        h.controller.tick(h.now)
+        h.feed(status(2, ack = false, unseen = null, "n1", "n0")) // n1 の表示開始
+        h.advance(1_000)
+        h.feed(status(3, ack = false, unseen = null, "n1"))
+        h.advance(500)
+        h.feed(status(4, ack = false, unseen = null, "n1", "n0")) // 1.5 秒で n0 が戻る
+        h.advance(499)
+        h.controller.tick(h.now)
+        assertEquals("n1 は 1.999 秒", 1, h.shown)
+        h.advance(1)
+        h.controller.tick(h.now)
+        assertEquals("n0 が戻っても n1 は表示開始から 2 秒ちょうどで既読", 0, h.shown)
+    }
+
+    @Test fun arrivalsEverySecondDoNotKeepOlderUnreadForever() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n0"))
+        h.enterB()
+        val ids = ArrayList<String>()
+        ids += "n0"
+        var rev = 2L
+        // 1 秒ごとに新着が来続ける。各通知は、その表示開始から 2 秒で既読になる(永久に未読が残らない)
+        repeat(20) { k ->
+            h.advance(1_000)
+            val id = "m$k"
+            ids.add(0, id)
+            h.feed(status(rev++, ack = false, unseen = null, *ids.take(5).toTypedArray()))
+            h.controller.tick(h.now)
+            // 窓は 5 件。表示開始から 2 秒たっていない未読は、直近の 2 件(今来たものと 1 秒前のもの)まで
+            assertTrue("未読は高々 2 件(k=$k, shown=${h.shown})", h.shown <= 2)
+        }
+        h.advance(2_000)
+        h.controller.tick(h.now)
+        assertEquals("新着が止まって 2 秒で全部既読", 0, h.shown)
+    }
+
+    @Test fun anIdShownForMoreThanTwoSecondsIsAlwaysReadEvenWhileNewArrivalsKeepComing() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n1"))
+        h.enterB()
+        h.advance(1_000)
+        h.feed(status(2, ack = false, unseen = null, "n2", "n1"))
+        h.advance(900)
+        h.feed(status(3, ack = false, unseen = null, "n3", "n2", "n1"))
+        assertEquals(3, h.shown)
+        h.advance(100) // n1 は入場から 2 秒
+        h.controller.tick(h.now)
+        assertEquals("古い n1 は新着が続いていても既読(n2, n3 は残る)", 2, h.shown)
+        h.advance(1_000) // n2 は 2 秒
+        h.feed(status(4, ack = false, unseen = null, "n4", "n3", "n2", "n1"))
+        h.controller.tick(h.now)
+        assertEquals("n2 も既読。n3 は 1.1 秒、n4 は新着", 2, h.shown)
+        h.advance(900) // n3 が 2 秒
+        h.controller.tick(h.now)
+        assertEquals("n3 も既読。n4 だけ残る", 1, h.shown)
+    }
+
+    @Test fun timeWhileNotLookingAtBIsNotCounted() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n1"))
+        h.advance(60_000) // A にいる
+        h.controller.tick(h.now)
+        assertEquals("A にいる間は数えない", 1, h.shown)
+        h.enterB()
+        h.advance(1_500)
+        h.leaveB()
+        h.advance(60_000)
+        h.controller.tick(h.now)
+        assertEquals("B を離れていた間は数えない", 1, h.shown)
+        // 新着が A にいる間に来ても、表示開始は B に入った時刻
+        h.feed(status(2, ack = false, unseen = null, "n2", "n1"))
+        assertEquals(2, h.shown)
+        h.advance(30_000)
+        h.enterB()
+        h.advance(1_999)
+        h.controller.tick(h.now)
+        assertEquals("入場から 1.999 秒では n1 も n2 も未読", 2, h.shown)
+        h.advance(1)
+        h.controller.tick(h.now)
+        assertEquals(0, h.shown)
+    }
+
+    @Test fun hostManagedAckIsSentOnceForTheNewestOfTheElapsedIdsAndLaterOnesFollow() {
+        val h = Harness()
+        h.start()
+        h.feed(status(5, ack = true, unseen = 2, "n2", "n1"))
+        h.enterB()
+        h.advance(1_500)
+        h.feed(status(6, ack = true, unseen = 3, "n3", "n2", "n1")) // n3 が 1.5 秒後に新着
+        h.advance(500) // n1, n2 は 2 秒、n3 は 0.5 秒
+        h.controller.tick(h.now)
+        assertEquals("2 秒たった id のうち最新(n2)を 1 回だけ", listOf("n2"), h.acks)
+        assertEquals("n3 はまだ未読", 1, h.shown)
+        h.advance(1_000)
+        h.controller.tick(h.now)
+        assertEquals(listOf("n2"), h.acks)
+        h.advance(500) // n3 が 2 秒
+        h.controller.tick(h.now)
+        assertEquals(listOf("n2", "n3"), h.acks)
+        assertEquals(0, h.shown)
+        h.advance(10_000)
+        h.controller.tick(h.now)
+        assertEquals("もう送らない", listOf("n2", "n3"), h.acks)
+    }
+
+    @Test fun anIdThatLeftTheWindowUnreadAndCameBackIsCountedAgainFromItsReappearance() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n1"))
+        h.enterB()
+        h.advance(1_500)
+        h.feed(status(2, ack = false, unseen = null, "n2")) // n1 は 1.5 秒の表示のまま窓から落ちる(未読のまま)
+        h.advance(1_000)
+        h.feed(status(3, ack = false, unseen = null, "n1", "n2")) // 戻る
+        h.advance(1_999)
+        h.controller.tick(h.now)
+        assertEquals("n2 は 2.999 秒で既読、n1 は戻ってから 1.999 秒", 1, h.shown)
+        h.advance(1)
+        h.controller.tick(h.now)
         assertEquals(0, h.shown)
     }
 

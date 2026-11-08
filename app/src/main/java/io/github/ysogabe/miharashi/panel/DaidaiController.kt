@@ -43,10 +43,13 @@ interface DaidaiEntryListener {
  *   接続先(panel の URL・トークン)が変わったときは、通知の表示データも捨てる。
  * - 照度: [onLux] へ流す(購読はひとつ。`LightSensorReader` のコールバックに相乗り)。[stop] で照度を捨て、次の値が来るまで UNKNOWN。
  * - 切替: `SWITCH` なら待機時計を解除してから B へ。操作中(`DEFER`)は [PageListener.onIdle] で一度だけ再評価する。B にいるときはカードの更新だけ。
- * - 未読(R17、設計書 §4.4): 画面 A の手掛かり用の件数を [renderUnread] へ渡す。B に確定して [READ_AFTER_MS] 以上表示されたら
- *   (呼び出し側が [tick] を呼ぶ)、その時点の通知をすべて既読にする(メモリのみ)。それより前に B を離れたら既読にしない。
- *   B の表示中に新着(通知 id の新規出現)が来たら、件数の増減によらず、その時点から数え直す(見ていない通知を既読にしない)。
- *   ホストが既読を管理する(`ack: true`)なら、既読にしたとき最新の通知の id を [sendAck] で伝える(ベストエフォート)。
+ * - 未読(R17、設計書 §4.4): 画面 A の手掛かり用の件数を [renderUnread] へ渡す。**通知 id ごとに「表示を始めた時刻」を持ち**、
+ *   B が確定して表示されている間だけ数える。未読の id は、表示開始から [READ_AFTER_MS] 以上たったものから順に既読にする
+ *   (呼び出し側が [tick] を呼ぶ。メモリのみ)。表示開始は、B に確定した時刻(その時点で窓にある未読の id)か、B の表示中にその id が
+ *   窓に新しく現れた時刻。B を離れたら持っている開始時刻を捨てる(次に B に入ってから数え直す)。
+ *   新着が来ても、すでに数え始めた古い未読の期限は延びない(新着が続いても、2 秒を超えて表示された未読は必ず既読になる)。
+ *   既読の id が窓に戻っても未読にならず、期限にも影響しない(再度ホストから新しい id で来た通知は新着)。
+ *   ホストが既読を管理する(`ack: true`)なら、既読にしたとき、その回に既読になった id のうち最新のものを [sendAck] で 1 回伝える(ベストエフォート)。
  * - Intent の extras は受け付けない(ページもマイクも、この型は外部入力から動かせない)。
  * - 通知の本文・トークンを logcat や例外メッセージに出さない。
  */
@@ -77,8 +80,8 @@ class DaidaiController(
     /** 自動切替で B へ向かっているときの、入場に渡す情報 */
     private var autoEntry: AutoEntry? = null
 
-    /** B を既読にする時刻(B に落ち着いている間だけ持つ)。未読が増えたら数え直す */
-    private var readDueMs: Long? = null
+    /** 未読の通知 id ごとの、B で表示を始めた時刻(B に落ち着いている間だけ持つ。窓に無い id・既読の id は持たない) */
+    private val viewStartMs = HashMap<String, Long>()
     private var shownUnread = -1
 
     private class AutoEntry(val noticeId: String, val openMic: Boolean, val micDenial: MicDenial?)
@@ -109,8 +112,8 @@ class DaidaiController(
         policy.cancelPending()
         deferredId = null
         autoEntry = null
-        // 背面から戻るときは常に A(PageController.onResume)。B の既読の予約は持ち越さない
-        readDueMs = null
+        // 背面から戻るときは常に A(PageController.onResume)。B の表示開始時刻は持ち越さない
+        viewStartMs.clear()
         ackedRev = null
         shownUnread = -1
         render(buildUi())
@@ -125,7 +128,7 @@ class DaidaiController(
         policy.cancelPending()
         deferredId = null
         autoEntry = null
-        readDueMs = null
+        viewStartMs.clear()
     }
 
     /** 照度の値(`LightSensorReader` のコールバック)。不明・不正値は null。 */
@@ -143,12 +146,11 @@ class DaidaiController(
         lastStatus = status
         val candidate = tracker.onStatus(status?.daidai, nowMs())
         render(buildUi())
-        // B を見ている間に新着(窓に新しい id が現れた)が未読で来た: その新着が見えてから READ_AFTER_MS たったら既読にする。
+        // 窓に新しい id が現れた未読(既読の id が戻っただけのものは含まない)が来たら、既読を伝えた rev の「0 扱い」は持ち越さない。
         // 件数の増減では判定しない(窓が入れ替わって未読数が同じでも、ホストの unseen が同数のままでも、新着は新着)。
-        if (tracker.lastArrivals.isNotEmpty() && tracker.unreadCount > 0) {
-            ackedRev = null // 既読を伝えた rev の「0 扱い」は、新着のあとには持ち越さない
-            if (pages.settledPage == Page.B) readDueMs = nowMs() + READ_AFTER_MS
-        }
+        if (tracker.lastArrivals.any { it in tracker.unreadIds }) ackedRev = null
+        // B を見ている間の新着は、その id が現れた時刻から数える。ほかの未読の期限は動かさない。
+        trackViewing(nowMs())
         publishUnread()
         if (candidate == null) return
         val result = policy.evaluate(candidate, context())
@@ -167,23 +169,36 @@ class DaidaiController(
     }
 
     /**
-     * 時間を進める(B に落ち着いている間、呼び出し側が定期的に呼ぶ)。B が確定して [READ_AFTER_MS] 以上たっていれば、
-     * その時点の通知をすべて既読にする。A にいる間・B を離れたあとは何もしない。
+     * 時間を進める(B に落ち着いている間、呼び出し側が定期的に呼ぶ)。B で表示を始めてから [READ_AFTER_MS] 以上たった未読の id を、
+     * (新着の有無にかかわらず)すべて既読にする。A にいる間・B を離れたあとは何もしない。
      */
     fun tick(nowMs: Long) {
         if (!started) return
-        val due = readDueMs ?: return
-        if (pages.settledPage != Page.B) { readDueMs = null; return }
-        if (nowMs < due) return
-        readDueMs = null
-        val hadUnread = tracker.unreadCount > 0
+        trackViewing(nowMs) // 引数の時刻(プロパティの nowMs() ではなく)
+        if (pages.settledPage != Page.B) return
+        // tracker.unreadIds は新しい順。先頭が「その回に既読になる id のうち最新」
+        val due = tracker.unreadIds.filter { id -> viewStartMs[id]?.let { nowMs - it >= READ_AFTER_MS } == true }
+        if (due.isEmpty()) return
+        val hadUnread = tracker.unreadCount > 0 // ack のホストならホストの unseen
         val ackHost = tracker.ack
-        tracker.markAllSeen()
+        tracker.markSeen(due)
+        viewStartMs.keys.removeAll(due.toSet())
         if (hadUnread && ackHost) {
             ackedRev = tracker.rev
-            tracker.latestNotice?.id?.let(sendAck)
+            sendAck(due.first())
         }
         publishUnread()
+    }
+
+    /**
+     * B に落ち着いているとき、窓にある未読の id に表示開始時刻を付け(なければ今)、窓から外れた id・既読の id の分は捨てる。
+     * 落ち着いていないとき(A にいる、背面)は全部捨てる(B を見ていない間は数えない)。
+     */
+    private fun trackViewing(now: Long) {
+        if (!started || pages.settledPage != Page.B) { viewStartMs.clear(); return }
+        val unread = tracker.unreadIds
+        viewStartMs.keys.retainAll(unread.toSet())
+        for (id in unread) if (id !in viewStartMs) viewStartMs[id] = now
     }
 
     /** ack 対応のホストへ既読を伝えた時点の `rev`。この `rev` の間はホストの `unseen` の更新を待たずに 0 として扱う */
@@ -191,7 +206,8 @@ class DaidaiController(
 
     private fun unread(): Int {
         val rev = tracker.rev
-        if (tracker.ack && rev != null && rev == ackedRev) return 0
+        // 既読を伝えた直後は、ホストの unseen の更新を待たない。まだ 2 秒たっていない未読(Panel が見ていない id)だけ残す
+        if (tracker.ack && rev != null && rev == ackedRev) return tracker.localUnread
         return tracker.unreadCount
     }
 
@@ -203,9 +219,9 @@ class DaidaiController(
     }
 
     override fun onSettled(page: Page, reason: PageReason) {
-        if (page == Page.B) readDueMs = nowMs() + READ_AFTER_MS
+        if (page == Page.B) trackViewing(nowMs()) // 窓にある未読の表示開始は B の確定時刻
         if (page == Page.A) {
-            readDueMs = null
+            viewStartMs.clear()
             autoEntry = null
             entryListener?.onLeft()
             return
@@ -252,7 +268,7 @@ class DaidaiController(
     }
 
     companion object {
-        /** B に確定してから既読にするまでの時間(R17、設計書 §4.4) */
+        /** 未読の通知を B で表示し始めてから既読にするまでの時間(R17、設計書 §4.4) */
         const val READ_AFTER_MS = 2_000L
     }
 

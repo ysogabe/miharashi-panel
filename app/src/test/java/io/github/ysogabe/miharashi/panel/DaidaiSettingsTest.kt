@@ -223,6 +223,55 @@ class DaidaiSettingsTest {
         ).forEach { assertNotNull("rejected: " + it.replace("\n", "\\n"), Settings.validateDaidaiUrl(it)) }
     }
 
+    /** 表 `daidai-url-cases.tsv`(scripts/test-install.sh も同じ表で `install.sh` を確かめる)の 1 行。 */
+    private data class UrlCase(val ok: Boolean, val url: String, val normalized: String, val raw: String)
+
+    private fun decodeCase(s: String) = s.replace("\\s", " ").replace("\\t", "\t").replace("\\r", "\r").replace("\\n", "\n")
+
+    private fun urlCases(): List<UrlCase> =
+        javaClass.getResource("/daidai-url-cases.tsv")!!.readText().lines()
+            .filter { it.startsWith("ok\t") || it.startsWith("ng\t") }
+            .map { line ->
+                val f = line.split("\t")
+                val url = decodeCase(f[1])
+                UrlCase(f[0] == "ok", url, if (f.size > 2 && f[2].isNotEmpty()) decodeCase(f[2]) else url, f[1])
+            }
+
+    @Test
+    fun urlFollowsTheSharedAcceptanceTable() {
+        val cases = urlCases()
+        assertTrue("表の件数 ${cases.size}", cases.size >= 100)
+        for (c in cases) {
+            val reason = Settings.validateDaidaiUrl(c.url)
+            if (c.ok) {
+                assertNull("受理されるはず: ${c.raw}($reason)", reason)
+                assertEquals("正規化: ${c.raw}", c.normalized, Settings.normalizeDaidaiUrl(c.url))
+            } else {
+                assertNotNull("拒否されるはず: ${c.raw}", reason)
+            }
+        }
+    }
+
+    /** `install.sh` が `&` などを文字参照に直して書いた panel.xml を、アプリの設定が読み戻すと元の URL になる。 */
+    @Test
+    fun urlWithXmlSpecialCharsIsReadBackFromEscapedXml() {
+        val dir = java.io.File(context.applicationInfo.dataDir, "shared_prefs").apply { mkdirs() }
+        java.io.File(dir, "panel.xml").writeText(
+            """<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<map>
+    <string name="url">http://localhost:8790</string>
+    <string name="token">$panelToken</string>
+    <string name="daidai_url">http://bridge.example/path&amp;x&lt;y&gt;z&quot;a&apos;b</string>
+    <string name="daidai_token">$bridgeToken</string>
+</map>
+""",
+        )
+        val d = Settings(context).daidai
+        assertEquals("http://bridge.example/path&x<y>z\"a'b", d.url)
+        assertEquals(bridgeToken, d.token)
+        assertNull(Settings.validateDaidaiUrl(d.url))
+    }
+
     @Test
     fun urlPortMustBeAbsentOrWithin1To65535() {
         listOf("http://host", "http://host/", "http://host:1", "http://host:65535", "http://host:8800/p", "http://[::1]", "http://[::1]/p", "http://[::1]:65535")

@@ -77,10 +77,13 @@ class NoticeTracker {
     var lastArrivals: List<String> = emptyList()
         private set
 
-    /** 今ある通知をすべて既読にする(B を 2 秒以上見たとき)。あとで来た通知は、また未読になる。 */
-    fun markAllSeen() {
-        for (n in notices.asReversed()) {
-            if (!seen.add(n.id)) continue
+    /** 今ある通知をすべて既読にする。あとで来た通知は、また未読になる。 */
+    fun markAllSeen() = markSeen(windowIds)
+
+    /** 指定した通知 id を既読にする(B で 2 秒以上表示した id)。窓に戻ってきても未読には戻らない。新しい順の入力でも古い順に入れる。 */
+    fun markSeen(ids: Collection<String>) {
+        for (id in ids.reversed()) {
+            if (!seen.add(id)) continue
             while (seen.size > KNOWN_IDS_MAX) {
                 val it = seen.iterator()
                 it.next()

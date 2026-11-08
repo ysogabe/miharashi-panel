@@ -206,11 +206,19 @@ expect_status 0
 expect_written_has 'http://h.example:8800/a%s%d%n'
 
 # ---- 10. XML の特殊文字の拒否(端末には何もしない)
-for bad in '"' '<' '>' '&' "'"; do
+# だいだいの URL は Settings と同じ規則で受理する(XML の特殊文字もパスでは許す)。書き込むときは文字参照に直し、
+# 端末の Settings が XML から読み戻すと元の URL になる(読み戻しは DaidaiSettingsTest.urlWithXmlSpecialCharsIsReadBackFromEscapedXml)
+for pair in '&:&amp;' '<:&lt;' '>:&gt;' '":&quot;' "':&apos;"; do
+    bad=${pair%%:*}
+    ref=${pair#*:}
     run "特殊文字 daidai-url $bad" -- --daidai-url "http://h.example:8800/x${bad}y"
-    expect_status 2
-    expect_no_adb
+    expect_status 0
+    expect_written_has "<string name=\"daidai_url\">http://h.example:8800/x${ref}y</string>"
+    expect_written_lacks "x${bad}y"
 done
+run "& を含む URL(dry-run の表示も文字参照)" -- --dry-run --daidai-url 'http://bridge.example/path&x'
+expect_status 0
+if grep -qF '<string name="daidai_url">http://bridge.example/path&amp;x</string>' "$WORK/out"; then ok "dry-run も &amp; で表示"; else ng "dry-run の表示: $(cat "$WORK/out")"; fi
 for bad in '"' '<' '>' '&' "'"; do
     run "特殊文字 url $bad" -- --url "http://h.example:8790/x${bad}y" --token-file "$WORK/panel.token"
     expect_status 2
@@ -265,6 +273,39 @@ for bad in 'http://bri dge.example' http://bridge!.example http://bridge.example
 done
 run "バックスラッシュ" -- --dry-run --daidai-url 'http://bridge.example:8800\x'
 expect_status 2
+run "前後の空白だけの URL は未設定(空と同じ)" FAKE_PANEL_XML="$WORK/existing.xml" -- --daidai-url '   '
+expect_status 0
+expect_written_has "<string name=\"daidai_url\"></string>"
+
+# ---- 11b. 受理規則の表(app/src/test/resources/daidai-url-cases.tsv)。Settings.validateDaidaiUrl は DaidaiSettingsTest が同じ表で確かめる
+CASES="$HERE/../app/src/test/resources/daidai-url-cases.tsv"
+[ -f "$CASES" ] || { echo "$CASES がない" >&2; exit 1; }
+# 表の中の \s \t \r \n を本物の文字に直す(末尾の改行を $(...) に消されないよう、最後に x を付けて外す)
+decode_case() {
+    dc=$(printf '%s' "$1" | awk '{ gsub(/\\s/, " "); gsub(/\\t/, "\t"); gsub(/\\r/, "\r"); gsub(/\\n/, "\n"); printf "%s", $0 }'; printf x)
+    printf '%s' "${dc%x}"
+}
+xml_ref() { # テスト側の実装(install.sh の xml_escape とは別に書く)
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\\&apos;/g"
+}
+table_n=0
+TABCHAR=$(printf '\t')
+while IFS="$TABCHAR" read -r verdict raw norm || [ -n "${verdict:-}" ]; do
+    case "$verdict" in ok|ng) ;; *) continue ;; esac
+    table_n=$((table_n + 1))
+    url=$(decode_case "$raw"; printf x); url=${url%x}
+    run "表 $verdict $raw" -- --dry-run --daidai-url "$url"
+    if [ "$verdict" = ok ]; then
+        if [ -n "$norm" ]; then want=$(decode_case "$norm"; printf x); want=${want%x}; else want=$url; fi
+        if [ "$STATUS" != 0 ]; then ng "受理されるはずが拒否(終了コード $STATUS): $(cat "$WORK/err")"; continue; fi
+        if grep -qF "<string name=\"daidai_url\">$(xml_ref "$want")</string>" "$WORK/out"; then PASS=$((PASS + 1)); else ng "正規化後の URL が違う(期待 $want): $(cat "$WORK/out")"; fi
+    else
+        if [ "$STATUS" != 2 ]; then ng "拒否されるはずが終了コード $STATUS"; continue; fi
+        if [ -s "$WORK/fake/calls.log" ]; then ng "拒否したのに adb が呼ばれた"; continue; fi
+        PASS=$((PASS + 1))
+    fi
+done < "$CASES"
+if [ "$table_n" -ge 100 ]; then ok "表の $table_n 件を確かめた"; else ng "表の件数が少なすぎる($table_n)"; fi
 run "末尾の / は正規化" -- --dry-run --daidai-url http://bridge.example:8800//
 expect_status 0
 if grep -qF '<string name="daidai_url">http://bridge.example:8800</string>' "$WORK/out"; then ok "末尾の / を落とす"; else ng "正規化されていない: $(cat "$WORK/out")"; fi
