@@ -112,6 +112,26 @@ class KioskSync(
         }
     }
 
+    /**
+     * だいだいの通知を既読にしたとホストへ伝える(`POST /api/v1/daidai/ack`、R17)。ベストエフォート: 失敗しても再送せず、何も返さない・記録しない。
+     * ブロッキングの通信なので送信用スレッドで行う。止めたあとは何もしない。SSE の `status` が未読件数の変化を運んでくる。
+     */
+    fun ackDaidai(id: String) {
+        if (!running) return
+        try {
+            sender.execute {
+                if (!running) return@execute
+                try {
+                    client.ackDaidai(id)
+                } catch (_: Exception) {
+                    // 既読の伝達に失敗しても UI には何も起こさない(通知の本文・id を記録しない)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // stop() 済み
+        }
+    }
+
     companion object {
         const val POLL_MS = 5_000L
 

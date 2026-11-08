@@ -3,6 +3,7 @@ package io.github.ysogabe.miharashi.panel
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.Reader
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -61,6 +62,16 @@ class KioskClient(
     /** `POST /api/v1/screen`。その画面へ移る(メニューも閉じる)。`id` はキオスクの `screens` のもの */
     fun screen(id: String) = post("/api/v1/screen", "id", id)
 
+    /**
+     * `POST /api/v1/daidai/ack`(R17)。通知を既読にしたとホストへ伝える。`id` は最新の通知の id。204 で戻る。
+     * panel のトークンで送る(Miharashi 本体の API。ブリッジのトークンは使わない)。ベストエフォートなので、呼び出し側は失敗を捨てる。
+     * @throws IllegalArgumentException `id` が通知 id の形(`^[A-Za-z0-9_.:-]{1,64}$`)でないとき(送らない。メッセージに値は含めない)
+     */
+    fun ackDaidai(id: String) {
+        require(DaidaiInfo.ID.matches(id)) { "通知 id の形が違う" }
+        post("/api/v1/daidai/ack", "id", id)
+    }
+
     /** `{"<field>": "<value>"}` を送り、204 を待つ。画面の id はキオスクから受け取った値なので、JSON として組み立てる。 */
     private fun post(path: String, field: String, value: String) {
         val c = open(path)
@@ -87,10 +98,12 @@ class KioskClient(
             if (c.responseCode != 200) throw KioskHttpException(c.responseCode, c.errorMessage())
             val parser = SseParser()
             BufferedReader(InputStreamReader(c.inputStream, Charsets.UTF_8)).use { r ->
+                // 行・イベントの上限を超えたら SseLimitException(IOException)で接続を終える
+                val lines = BoundedLineReader(r, SseParser.MAX_LINE_BYTES)
                 while (true) {
-                    val line = r.readLine() ?: break
-                    val ev = parser.line(line) ?: continue
-                    if (ev.first == "status") onStatus(KioskStatus.parse(ev.second))
+                    val line = lines.readLine() ?: break
+                    val ev = parser.next(line) ?: continue
+                    if (ev.name == "status") onStatus(KioskStatus.parse(ev.data))
                 }
             }
         } finally {
@@ -109,22 +122,42 @@ class KioskClient(
     }
 }
 
-/** SSE の行を読み、イベントが 1 つまとまったら (event 名, data) を返す。コメント(`:` で始まる行)は捨てる。 */
+/** SSE の 1 行・1 イベントが上限を超えた(設計書 §5.8)。接続を終えて再接続させる。メッセージに受信した内容は含めない。 */
+class SseLimitException(message: String) : IOException(message)
+
+/** SSE のイベント 1 つ。`id` はこのイベントの `id:` 行の値(無ければ null)。 */
+data class SseEvent(val name: String, val data: String, val id: String?) {
+    /** data は通知本文を含みうるので出さない(`DaidaiNotice.toString()` の秘匿を迂回させない)。 */
+    override fun toString(): String = "SseEvent(name=$name, id=$id, dataLength=${data.length})"
+}
+
+/**
+ * SSE の行を読み、イベントが 1 つまとまったら返す。コメント(`:` で始まる行)の内容は捨てる。
+ * 1 行は 8 KB(UTF-8)、1 イベント(空行までの全行。コメント行も含む)は 16 KB まで。超えたら [SseLimitException]。
+ * 行の終端は呼び出し側から渡されないので、CRLF を想定して 1 行ごとに +2 バイトで数える(受信バイト数を過小に数えない側に倒す)。
+ */
 class SseParser {
     private var event = "message"
+    private var eventId: String? = null
     private val data = StringBuilder()
+    private var eventBytes = 0
 
-    fun line(line: String): Pair<String, String>? {
+    /** 最後に受け取った `id:`(`Last-Event-ID` に使う)。イベントが `data` を持たなくても更新される。無ければ null */
+    var lastEventId: String? = null
+        private set
+
+    /** @throws SseLimitException 行またはイベントが上限を超えたとき */
+    fun next(line: String): SseEvent? {
         if (line.isEmpty()) {
-            if (data.isEmpty()) {
-                event = "message"
-                return null
-            }
-            val out = event to data.toString()
-            event = "message"
-            data.setLength(0)
+            eventId?.let { lastEventId = it }
+            val out = if (data.isEmpty()) null else SseEvent(event, data.toString(), eventId)
+            reset()
             return out
         }
+        val bytes = utf8Length(line)
+        if (bytes > MAX_LINE_BYTES) throw SseLimitException("SSE の 1 行が上限($MAX_LINE_BYTES バイト)を超えた")
+        eventBytes += bytes + LINE_TERMINATOR_BYTES
+        if (eventBytes > MAX_EVENT_BYTES) throw SseLimitException("SSE の 1 イベントが上限($MAX_EVENT_BYTES バイト)を超えた")
         if (line.startsWith(":")) return null
         val name = line.substringBefore(':')
         val value = line.substringAfter(':', "").removePrefix(" ")
@@ -134,8 +167,77 @@ class SseParser {
                 if (data.isNotEmpty()) data.append('\n')
                 data.append(value)
             }
+            // NUL を含む id は無視する(SSE の仕様)
+            "id" -> if ('\u0000' !in value) eventId = value
         }
         return null
+    }
+
+    /** 従来の呼び出し口。イベント名と data の組を返す(`id:` は [next] / [lastEventId] で読む)。 */
+    fun line(line: String): Pair<String, String>? = next(line)?.let { it.name to it.data }
+
+    private fun reset() {
+        event = "message"
+        eventId = null
+        data.setLength(0)
+        eventBytes = 0
+    }
+
+    companion object {
+        const val MAX_LINE_BYTES = 8 * 1024
+        const val MAX_EVENT_BYTES = 16 * 1024
+
+        /** 行の終端の想定バイト数(CRLF) */
+        private const val LINE_TERMINATOR_BYTES = 2
+
+        private fun utf8Length(s: String): Int {
+            var n = 0
+            var i = 0
+            while (i < s.length) {
+                val c = s[i]
+                when {
+                    c.code < 0x80 -> n += 1
+                    c.code < 0x800 -> n += 2
+                    Character.isHighSurrogate(c) && i + 1 < s.length && Character.isLowSurrogate(s[i + 1]) -> {
+                        n += 4
+                        i++
+                    }
+                    else -> n += 3
+                }
+                i++
+            }
+            return n
+        }
+    }
+}
+
+/**
+ * 1 行ずつ読む。`BufferedReader.readLine()` と同じ行区切り(LF・CR・CRLF)だが、`maxChars` を超える行は
+ * 読みきる前に [SseLimitException] にする(メモリを使い尽くされない)。
+ */
+internal class BoundedLineReader(private val reader: Reader, private val maxChars: Int) {
+    private var skipLf = false
+
+    /** 次の行。入力の終わりなら null。 */
+    fun readLine(): String? {
+        val sb = StringBuilder()
+        while (true) {
+            val c = reader.read()
+            if (c < 0) return if (sb.isEmpty()) null else sb.toString()
+            if (skipLf) {
+                skipLf = false
+                if (c == '\n'.code) continue
+            }
+            when (c) {
+                '\n'.code -> return sb.toString()
+                '\r'.code -> {
+                    skipLf = true
+                    return sb.toString()
+                }
+            }
+            if (sb.length >= maxChars) throw SseLimitException("SSE の 1 行が上限($maxChars 文字)を超えた")
+            sb.append(c.toChar())
+        }
     }
 }
 

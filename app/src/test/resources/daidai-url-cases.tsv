@@ -1,0 +1,126 @@
+# だいだい連携の URL(daidai_url)の受理規則の表。Settings.validateDaidaiUrl(DaidaiSettingsTest)と scripts/install.sh(scripts/test-install.sh)が
+# **同じ表**に従うことを確かめる。1 行 = 判定<TAB>URL<TAB>(ok のとき)正規化後の URL(省略なら URL と同じ)。`#` で始まる行は注釈。
+# URL の中の \s は空白、\t はタブ、\n は改行、\r は CR。XML への書き込み(& などの文字参照)はここでは扱わない(install.sh は文字参照に直して書く)。
+# --- 正常 ---
+ok	http://192.168.0.132:8800
+ok	https://bridge.local
+ok	http://host:80/	http://host:80
+ok	http://host/prefix
+ok	https://host/a/b/	https://host/a/b
+ok	HTTP://Host
+ok	http://my-host_1.example.com/x%20y
+ok	http://host:8800//	http://host:8800
+ok	http://host/path&x
+ok	http://host/a&b&c=d
+ok	http://host/a<b>c
+ok	http://host/a"b'c
+ok	http://host/@x
+ok	http://host/パス
+ok	http://host:1
+ok	http://host:65535
+ok	http://host:00080
+# 前後の空白は落とす(Settings は trim、install.sh も落とす)
+ok	\s\shttp://host:8800\s\s	http://host:8800
+ok	http://host:8800\n	http://host:8800
+ok	\thttp://host:8800\r\n	http://host:8800
+# IPv6 リテラル
+ok	http://[::1]:8800
+ok	http://[::1]
+ok	http://[::]
+ok	http://[1::]
+ok	http://[fe80::1]
+ok	http://[FFFF::1]
+ok	http://[2001:db8::8a2e:370:7334]/p
+ok	http://[1:2:3:4:5:6:7:8]
+ok	http://[1:2:3:4:5:6:7:8]:65535
+ok	http://[1:2:3:4:5:6:7::]
+ok	http://[::2:3:4:5:6:7:8]
+ok	http://[::1.2.3.4]
+ok	http://[::ffff:192.168.0.1]:8800
+ok	http://[1:2:3:4:5:6:1.2.3.4]
+ok	http://[1:2:3:4:5::1.2.3.4]
+ok	http://[1::2:1.2.3.4]
+# --- 拒否: IPv6 の構文 ---
+ng	http://[1]
+ng	http://[:::]
+ng	http://[1.2.3.4]
+ng	http://[]
+ng	http://[:]
+ng	http://[:1]
+ng	http://[1:]
+ng	http://[::1:]
+ng	http://[1::2::3]
+ng	http://[1:::2]
+ng	http://[g::1]
+ng	http://[12345678::1]
+ng	http://[zz::1]
+ng	http://[fe80::1%eth0]
+ng	http://[1:2:3:4:5:6:7]
+ng	http://[1:2:3:4:5:6:7:8:9]
+ng	http://[1:2:3:4:5:6:7:8::]
+ng	http://[1:2:3:4:5:6:7::8]
+ng	http://[::1:2:3:4:5:6:7:8]
+ng	http://[1.2.3.4::1]
+ng	http://[1::1.2.3.4:2]
+ng	http://[::1.2.3]
+ng	http://[::1.2.3.4.5]
+ng	http://[::1.2.3.256]
+ng	http://[1:2:3:4:5:6:7:1.2.3.4]
+ng	http://[::1
+ng	http://::1]
+ng	http://[::1]]
+ng	http://[[::1]]
+ng	http://[::1]x
+ng	http://[::1]:
+ng	http://[::1]:0
+ng	http://[::1]:65536
+ng	http://[::1]:-1
+# --- 拒否: スキーム・ホスト・ポート ---
+ng	ftp://host
+ng	ws://host
+ng	file:///etc/passwd
+ng	host:8800
+ng	192.168.0.132:8800
+ng	//host
+ng	javascript:alert(1)
+ng	http://
+ng	https://
+ng	http:///path
+ng	http://:8800
+ng	http://@
+ng	http://ホスト
+ng	http://bri!dge.example
+ng	http://br*dge
+ng	http://host%41
+ng	http://host:99999
+ng	http://host:0
+ng	http://host:0x
+ng	http://host:65536
+ng	http://host:-1
+ng	http://host:+80
+ng	http://host:abc
+ng	http://host:
+ng	http://host:/path
+ng	http://host:123456
+ng	http://host:1:2
+ng	http://host:000000080
+# --- 拒否: ユーザー情報・クエリ・フラグメント ---
+ng	http://user@host
+ng	http://user:pass@host:8800
+ng	http://@host
+ng	http://host@evil.example
+ng	http://host:8800@evil.example/
+ng	http://host?x=1
+ng	http://host/?
+ng	http://host/p?token=abc
+ng	http://host#frag
+ng	http://host/#
+ng	http://host/p#x
+# --- 拒否: 空白・制御文字・バックスラッシュ(途中にあるもの) ---
+ng	http://ho\sst
+ng	http://host/a\sb
+ng	http://host\nx
+ng	http://ho\tst
+ng	http://host/a\rb
+ng	http://host\@evil
+ng	http://host:8800\x
