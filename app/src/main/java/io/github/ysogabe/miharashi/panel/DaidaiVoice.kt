@@ -68,9 +68,6 @@ class DaidaiVoice(
     private var debounce: Cancelable? = null
     private var waitingForIdle = false
 
-    /** いまのセッションが自動切替の起点か(再試行で false になる) */
-    private var sessionAuto = false
-
     private var baseUi = DaidaiUiState()
     private var snapshot: VoiceSnapshot? = null
 
@@ -150,7 +147,6 @@ class DaidaiVoice(
             else -> return
         }
         val rt = ensureRuntime(s) ?: return
-        sessionAuto = entry.autoStarted
         rt.cancel() // 念のため(進行中のものは start が無視するので、必ず空にしてから)
         rt.start(reason, entry.noticeId, entry.autoStarted)
     }
@@ -161,7 +157,7 @@ class DaidaiVoice(
         if (snapshot?.state != VoiceState.ERROR) return
         if (pages.settledPage != Page.B || pages.userBusy) return
         if (!settings().isConfigured()) return
-        sessionAuto = false // 再試行は利用者の操作。自動切替の歯止めには数えない
+        // 再試行は利用者の操作(VoiceSession.retry は autoStarted = false で始める)。自動切替の歯止めには数えない
         rt.retry()
     }
 
@@ -228,13 +224,19 @@ class DaidaiVoice(
             main.post { if (id == runtimeId) onSnapshotOnMain(snapshot) }
         }
 
-        override fun onMicOpened() {
+        override fun onMicOpened(autoStarted: Boolean) {
+            val openedAtMs = nowMs() // 開いた時刻。開始音(と main への配送)の遅れを含めない
             // 開始音: セッションのスレッドで鳴らす。例外は録音を止める理由にしない(ここで投げるとセッションが終わる)
             try {
                 startSound.play()
             } catch (_: Exception) {
             }
-            main.post { if (sessionAuto) policy.onAutoMicStarted(nowMs()) }
+            // 実際にマイクを開いたセッションの値(autoStarted)と時刻を、いまここで取り出して不変の値として投稿する。
+            // main で可変のフィールドを読まない(手動のセッションへ切り替わっても、取り違えない)。
+            // 作り直し前(破棄済み)の runtime で実際に開いたマイクも、歯止めの記録としては数える(画面への反映だけが現行の世代に限られる)
+            if (autoStarted) {
+                main.post { policy.onAutoMicStarted(openedAtMs) }
+            }
         }
 
         override fun onEnded(autoStarted: Boolean, reason: String) {

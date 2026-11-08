@@ -217,6 +217,93 @@ class WavPlayerTest {
         assertNotNull(am.lastAbandonedAudioFocusRequest)
     }
 
+    // ---- 資源の作成の最中に stop() が走る競合(作成側が公開しようとしたとき取消済みなら、その場で解放する)
+
+    @Test fun stopWhileTheFocusIsBeingRequestedAbandonsItOnceTheRequestReturns() {
+        val am = shadowOf(audioManager)
+        val inRequest = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val created = AtomicInteger()
+        val track = FakeTrack()
+        val calls = AtomicInteger()
+        val p = WavPlayer(
+            audioManager, PcmTrackFactory { _, _ -> created.incrementAndGet(); track }, sleepMs = { Thread.sleep(1) },
+            requestFocusCall = { req ->
+                inRequest.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                audioManager.requestAudioFocus(req)
+            },
+        )
+        p.play(wav) { calls.incrementAndGet() }
+        assertTrue(inRequest.await(5, TimeUnit.SECONDS))
+        p.stop() // フォーカスの取得中(まだ公開されていない)
+        assertNull("取得は終わっていない", am.lastAbandonedAudioFocusRequest)
+        release.countDown()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (am.lastAbandonedAudioFocusRequest == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertNotNull("取れたフォーカスはその場で手放す(漏れない)", am.lastAbandonedAudioFocusRequest)
+        assertEquals("取消済みなので出力は作らない", 0, created.get())
+        Thread.sleep(100)
+        assertEquals("止めたあとは onDone を呼ばない", 0, calls.get())
+    }
+
+    @Test fun stopWhileTheTrackIsBeingCreatedReleasesTheTrackAndTheFocusOnceItIsCreated() {
+        val am = shadowOf(audioManager)
+        val inCreate = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val track = FakeTrack()
+        val calls = AtomicInteger()
+        val p = WavPlayer(
+            audioManager,
+            PcmTrackFactory { _, _ ->
+                inCreate.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                track
+            },
+            sleepMs = { Thread.sleep(1) },
+        )
+        p.play(wav) { calls.incrementAndGet() }
+        assertTrue(inCreate.await(5, TimeUnit.SECONDS))
+        assertNotNull("フォーカスは取れている", am.lastAudioFocusRequest)
+        p.stop() // 出力の作成中(まだ公開されていない)
+        release.countDown()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (track.releases.get() == 0 && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertEquals("作ったその場で release(蓄積しない)", 1, track.releases.get())
+        assertEquals(0, track.plays.get())
+        assertEquals(0, track.written.get())
+        assertNotNull("フォーカスも手放した", am.lastAbandonedAudioFocusRequest)
+        Thread.sleep(100)
+        assertEquals("release は一度だけ", 1, track.releases.get())
+        assertEquals(0, calls.get())
+    }
+
+    @Test fun focusLossWhileTheTrackIsBeingCreatedAlsoReleasesIt() {
+        val am = shadowOf(audioManager)
+        val inCreate = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val track = FakeTrack()
+        val q = LinkedBlockingQueue<Boolean>()
+        val p = WavPlayer(
+            audioManager,
+            PcmTrackFactory { _, _ ->
+                inCreate.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                track
+            },
+            sleepMs = { Thread.sleep(1) },
+        )
+        p.play(wav) { q.add(it) }
+        assertTrue(inCreate.await(5, TimeUnit.SECONDS))
+        am.lastAudioFocusRequest!!.listener.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS) // 他に奪われた
+        release.countDown()
+        assertEquals("失敗として知らせる", false, q.poll(5, TimeUnit.SECONDS))
+        val deadline = System.currentTimeMillis() + 5_000
+        while (track.releases.get() == 0 && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertEquals(1, track.releases.get())
+        assertEquals(0, track.plays.get())
+    }
+
     // ---- 実際の AudioTrack(シャドウ)
 
     @Test fun realAudioTrackPathPlaysTheWav() {

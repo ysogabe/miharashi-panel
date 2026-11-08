@@ -107,7 +107,7 @@ class DaidaiVoiceTest {
         fun autoCycle(rev: Long, id: String, endReason: String = "done") {
             autoSwitch(rev, id)
             advance(DaidaiVoice.ENTRY_DEBOUNCE_MS)
-            rt.listener.onMicOpened()
+            rt.listener.onMicOpened(true)
             sim.settle()
             rt.listener.onEnded(true, endReason)
             sim.settle()
@@ -560,18 +560,93 @@ class DaidaiVoiceTest {
         h.ready()
         h.autoSwitch(2, "n1")
         h.advance(300)
-        h.rt.listener.onMicOpened() // 自動起動としてはここだけ数える
+        h.rt.listener.onMicOpened(true) // 自動起動としてはここだけ数える
         h.sim.settle()
         h.snapshot(snap(VoiceState.ERROR, error = VoiceErrorCode.HOST_UNREACHABLE))
         h.rt.listener.onEnded(true, "host_unreachable")
         h.advance(4 * 60_000L)
         h.voice.onErrorTapped() // 利用者のタップ(autoStarted=false)
-        h.rt.listener.onMicOpened()
+        h.rt.listener.onMicOpened(false)
         h.sim.settle()
         h.swipeToA()
         h.advance(60_000L + 2_000) // 最初の起動から 5 分を過ぎた
         h.autoSwitch(3, "n2")
         assertTrue("再試行のマイク起動は自動の歯止めに数えない", h.entered.last().openMic)
+    }
+
+    // ---- 自動マイク起動の記録は、マイクを開いたセッションの値で行う(配送の遅れ・別のセッションに左右されない)
+
+    @Test fun anAutoMicStartIsRecordedEvenIfAManualSessionTakesOverBeforeTheNoticeIsDelivered() {
+        val h = Harness()
+        h.ready()
+        h.autoSwitch(2, "n1")
+        h.advance(300)
+        h.snapshot(snap(VoiceState.ERROR, error = VoiceErrorCode.HOST_UNREACHABLE))
+        h.rt.listener.onMicOpened(true) // 開いた(自動)。main への配送はまだ
+        h.voice.onErrorTapped() // 配送の前に、利用者のタップで手動のセッションへ切り替わる
+        h.sim.settle()
+        h.swipeToA()
+        h.advance(60_000) // 1 分後
+        h.autoSwitch(3, "n2")
+        val e = h.entered.last()
+        assertFalse("実際に開いた自動起動は、あとで手動に切り替わっても歯止めに数える", e.openMic)
+        assertEquals(MicDenial.COOLDOWN, e.micDenial)
+    }
+
+    @Test fun aManualMicStartIsNotCountedAsAutoEvenIfAnAutoSessionIsRunningInTheNewRuntime() {
+        val h = Harness()
+        h.ready()
+        h.swipeToB() // 手動(スワイプ)
+        h.advance(300)
+        val old = h.rt
+        h.swipeToA()
+        h.voice.stop() // 作り直し(古い runtime は破棄済み)
+        h.advance(10_000)
+        h.autoSwitch(2, "n1") // 新しい runtime で自動のセッションが始まる
+        h.advance(300)
+        assertTrue(h.rt !== old)
+        assertTrue(h.rt.starts.single().auto)
+        old.listener.onMicOpened(false) // 古い runtime で開いていた手動のマイクの通知が、いま届く
+        h.sim.settle()
+        h.swipeToA()
+        h.advance(60_000)
+        h.autoSwitch(3, "n2")
+        assertTrue("手動で開いたマイクを自動として数えない(新しい自動セッションはまだ開いていない)", h.entered.last().openMic)
+    }
+
+    @Test fun theTimeOfTheAutoMicStartIsWhenItOpenedNotWhenTheMainThreadGotTheNotice() {
+        val h = Harness()
+        h.ready()
+        h.autoSwitch(2, "n1")
+        h.advance(300)
+        h.rt.listener.onMicOpened(true) // 開いた時刻 T。main への配送は 2 分遅れる
+        h.sim.tick(2 * 60_000L)
+        h.sim.settle()
+        h.swipeToA()
+        h.advance(3 * 60_000L + 1_000L) // T から 5 分と 1 秒(配送の時刻からは 3 分と 1 秒)
+        h.autoSwitch(3, "n2")
+        assertTrue("クールダウンは開いた時刻から数える", h.entered.last().openMic)
+    }
+
+    @Test fun anAutoMicOpenedByAnOldDisposedRuntimeIsStillRecordedButDoesNotTouchTheScreen() {
+        val h = Harness()
+        h.ready()
+        h.autoSwitch(2, "n1")
+        h.advance(300)
+        val old = h.rt
+        h.voice.stop() // 背面: runtime を破棄
+        val rendered = h.rendered.size
+        old.listener.onSnapshot(snap(VoiceState.LISTENING, active = true, mic = true, transcript = "旧"))
+        old.listener.onMicOpened(true) // 破棄の前に実際に開いていたマイク
+        h.sim.settle()
+        assertEquals("古い runtime のスナップショットは画面に出さない", rendered, h.rendered.size)
+        assertFalse(h.pages.sessionActive)
+        h.swipeToA()
+        h.advance(60_000)
+        h.autoSwitch(3, "n2")
+        val e = h.entered.last()
+        assertFalse("古い runtime で開いたマイクも歯止めに数える", e.openMic)
+        assertEquals(MicDenial.COOLDOWN, e.micDenial)
     }
 
     @Test fun tapAfterLeavingBDoesNothing() {
@@ -630,14 +705,14 @@ class DaidaiVoiceTest {
         val h = Harness()
         h.startSwipeSession()
         h.toneThrows = true
-        h.rt.listener.onMicOpened() // 例外を投げたらセッションが終わってしまう
+        h.rt.listener.onMicOpened(false) // 例外を投げたらセッションが終わってしまう
         assertEquals(1, h.tones)
     }
 
     @Test fun theStartToneIsPlayedOnTheCallerThreadWhenTheMicOpens() {
         val h = Harness()
         h.startSwipeSession()
-        h.rt.listener.onMicOpened()
+        h.rt.listener.onMicOpened(false)
         assertEquals("セッションのスレッドで即座に鳴らす(メインへの post を待たない)", 1, h.tones)
     }
 

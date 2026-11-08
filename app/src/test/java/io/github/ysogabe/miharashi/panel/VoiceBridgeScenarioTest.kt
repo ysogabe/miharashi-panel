@@ -763,7 +763,7 @@ class VoiceBridgeScenarioTest {
             snaps += snapshot
             times += sim.nowMs()
         }
-        override fun onMicOpened() { micOpenedAt += 0 }
+        override fun onMicOpened(autoStarted: Boolean) { micOpenedAt += 0 }
         override fun onEnded(autoStarted: Boolean, reason: String) { ended += autoStarted to reason }
 
         /** 状態の遷移の並び(連続した同じ値は 1 つに) */

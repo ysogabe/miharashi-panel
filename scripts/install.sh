@@ -223,14 +223,24 @@ if [ -n "$URL" ] || [ -n "$TOKEN" ] || [ -n "$SLEEP" ] || [ "$DURL_SET" = 1 ] ||
         printf '%s\n' '</map>'
     }
 
+    # 書き込みは同じディレクトリの一時ファイル(panel.xml.new)へ。行数と末尾の </map> を端末側で確かめてから mv で置き換える
+    # (cat > panel.xml は先に既存のファイルを空にするので、ADB の切断・書き込みの失敗で設定が壊れる)。
+    # 失敗したら一時ファイルを消して非ゼロで終わり、既存の panel.xml には触れない。
+    XML_LINES=$(emit_xml mask | wc -l | tr -d ' ')
+    WRITE_CMD="run-as $PKG sh -c 'mkdir -p shared_prefs && cat > $PREFS.new && [ \"\$(wc -l < $PREFS.new)\" -eq $XML_LINES ] && tail -n 1 $PREFS.new | grep -q \"</map>\" && mv $PREFS.new $PREFS || { rm -f $PREFS.new; exit 1; }'"
+
     if [ "$DRY" = 1 ]; then
-        adb_run shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > $PREFS'"
-        echo "  (標準入力で渡す内容。既存の項目は端末で読んだものを残す:)"
+        adb_run shell "$WRITE_CMD"
+        echo "  (標準入力で渡す内容。既存の項目は端末で読んだものを残す。一時ファイルへ書き、行数と </map> を確かめてから置き換える:)"
         emit_xml mask | sed 's/^/    | /'
     else
         # トークンはコマンド行に出さず、標準入力で渡す
-        emit_xml | adb shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > $PREFS'"
-        echo "設定を書き込んだ(指定した項目だけ。ほかの既存の設定は残した)"
+        if emit_xml | adb shell "$WRITE_CMD"; then
+            echo "設定を書き込んだ(指定した項目だけ。ほかの既存の設定は残した)"
+        else
+            echo "端末の $PREFS への書き込みに失敗した(接続が切れたか、端末側の確認が通らなかった)。既存の設定は変えていない。もう一度実行する" >&2
+            exit 1
+        fi
     fi
 fi
 

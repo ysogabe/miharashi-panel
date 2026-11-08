@@ -112,8 +112,11 @@ interface VoiceSessionListener {
     /**
      * マイクを開いた(録音を始めた)直後。T8 はここで開始音(`ToneGenerator`)を鳴らす。
      * 開始音と録音の順序の方針: マイクを先に開き、鳴らす間の [VoiceLimits.START_TONE_GUARD_MS] は録音を捨てる(送らない)。
+     *
+     * `autoStarted`: **マイクを開いたそのセッション**の起点(通知の自動切替なら true)。呼び出し側が可変の状態を後から読まずに済むよう、
+     * 通知の時点の値を渡す([onEnded] の `autoStarted` と同じ値)。
      */
-    fun onMicOpened()
+    fun onMicOpened(autoStarted: Boolean)
 
     /**
      * セッションが終わった(DONE・ERROR・取消のどれか)ときに**セッションごとに 1 回だけ**。ERROR から IDLE へ戻るときは呼ばない。

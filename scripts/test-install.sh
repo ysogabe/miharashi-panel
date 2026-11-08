@@ -14,12 +14,29 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/bin"
 cat > "$WORK/bin/adb" <<'EOF'
 #!/bin/sh
-# 偽の adb。FAKE_DIR に記録する: calls.log=呼び出し(引数)、written.xml=panel.xml への標準入力
+# 偽の adb。FAKE_DIR に記録する: calls.log=呼び出し(引数)、written.xml=書き込みが成功したあとの端末の panel.xml
 # FAKE_PANEL_XML があればそれを run-as cat の結果にする(なければ「ファイルがない」)。FAKE_GRANT_FAIL=1 で pm grant を失敗、
 # FAKE_READ_FAIL=1 で読み出しを(ファイルがない以外の理由で)失敗させる。
+# 書き込み(run-as sh -c '...')は、端末の代わりの $FAKE_DIR/dev/shared_prefs の中で、渡されたスクリプトを本当に実行する
+# (一時ファイルへの書き込み・行数と </map> の確認・mv)。FAKE_WRITE_FAIL で書き込みの失敗を再現する:
+#   partial = 標準入力を 3 行だけ読んで切れる(adb は非ゼロ)、dropmid = 途中の 1 行が欠けて末尾の </map> だけ届く(adb は成功を返す)、
+#   kill    = 一時ファイルに 3 行書いたところで接続が落ち、端末側の後始末も走らない(adb は非ゼロ)
 echo "adb $*" >> "$FAKE_DIR/calls.log"
 case "$*" in
-    *"cat > shared_prefs/panel.xml"*) cat > "$FAKE_DIR/written.xml" ;;
+    *"cat > shared_prefs/panel.xml.new"*)
+        dev="$FAKE_DIR/dev"
+        mkdir -p "$dev/shared_prefs"
+        if [ ! -f "$dev/shared_prefs/panel.xml" ] && [ -n "${FAKE_PANEL_XML:-}" ] && [ -f "$FAKE_PANEL_XML" ]; then
+            cp "$FAKE_PANEL_XML" "$dev/shared_prefs/panel.xml"
+        fi
+        inner=${2#run-as * }
+        case "${FAKE_WRITE_FAIL:-}" in
+            partial) head -n 3 | (cd "$dev" && eval "$inner"); exit 1 ;;
+            dropmid) sed '4d' | (cd "$dev" && eval "$inner") || exit 1 ;;
+            kill) head -n 3 > "$dev/shared_prefs/panel.xml.new"; exit 1 ;;
+            *) (cd "$dev" && eval "$inner") || exit 1 ;;
+        esac
+        cp "$dev/shared_prefs/panel.xml" "$FAKE_DIR/written.xml" ;;
     *"cat shared_prefs/panel.xml"*)
         if [ "${FAKE_READ_FAIL:-0}" = 1 ]; then echo "error: device offline"; exit 1; fi
         if [ -n "${FAKE_PANEL_XML:-}" ] && [ -f "$FAKE_PANEL_XML" ]; then cat "$FAKE_PANEL_XML"
@@ -267,6 +284,32 @@ printf "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <st
 run "切れたファイル" FAKE_PANEL_XML="$WORK/truncated.xml" -- --daidai-url http://h.example:8800
 expect_status 1
 expect_not_written
+
+# ---- 16b. 書き込みの途中で失敗しても、端末の既存の設定は変わらない(一時ファイルへ書いて、確認してから mv)
+expect_device_unchanged() { # 端末の panel.xml が、読んだ元のファイルのまま
+    if cmp -s "$WORK/existing.xml" "$WORK/fake/dev/shared_prefs/panel.xml"; then ok "端末の panel.xml は元のまま"; else ng "端末の panel.xml が変わった"; fi
+}
+expect_device_lacks_tmp() { if [ -e "$WORK/fake/dev/shared_prefs/panel.xml.new" ]; then ng "一時ファイルが残った"; else ok "一時ファイルを残さない"; fi; }
+run "書き込みの途中で切れる" FAKE_PANEL_XML="$WORK/existing.xml" FAKE_WRITE_FAIL=partial -- --daidai-url http://h.example:8800
+expect_status 1
+expect_not_written
+expect_device_unchanged
+expect_device_lacks_tmp
+expect_stderr_has "書き込みに失敗"
+run "途中の行が欠けて末尾だけ届く" FAKE_PANEL_XML="$WORK/existing.xml" FAKE_WRITE_FAIL=dropmid -- --daidai-url http://h.example:8800
+expect_status 1
+expect_not_written
+expect_device_unchanged
+expect_device_lacks_tmp
+run "接続が落ちて端末の後始末も走らない" FAKE_PANEL_XML="$WORK/existing.xml" FAKE_WRITE_FAIL=kill -- --daidai-url http://h.example:8800
+expect_status 1
+expect_not_written
+expect_device_unchanged
+run "書き込みが成功すると置き換わる" FAKE_PANEL_XML="$WORK/existing.xml" -- --daidai-url http://h.example:8800
+expect_status 0
+expect_device_lacks_tmp
+if cmp -s "$WORK/existing.xml" "$WORK/fake/dev/shared_prefs/panel.xml"; then ng "置き換わっていない"; else ok "端末の panel.xml が新しい内容に置き換わった"; fi
+expect_written_has "<string name=\"daidai_url\">http://h.example:8800</string>"
 
 # ---- 17. --dry-run: 端末に触れず、実行するコマンドを表示する。トークンは伏せる
 run "dry-run" FAKE_PANEL_XML="$WORK/existing.xml" -- --dry-run --url http://192.168.0.132:8790 --token-file "$WORK/panel.token" --daidai-url http://192.168.0.132:8800 --daidai-token-file "$WORK/daidai.token" --sleep-minutes 3 --home

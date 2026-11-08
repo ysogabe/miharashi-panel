@@ -26,6 +26,12 @@ enum class VoicePhase {
  * 現在の世代でなければ捨てる(A↔B の往復や、作成中の離脱で遅れて届く結果への防御)。**例外は作成の成功**: 古い世代の作成が
  * 成功して届いたら、録音を始めず、直ちにその `session_id` で `DELETE` する(S7)。
  *
+ * ## マイクを開く許可(スレッドをまたぐ)
+ * 世代番号はセッションのスレッドでしか進まないので、キューに積まれた作成成功の処理(`onCreated → openMic`)より後に処理される取消では、
+ * マイクを開くのを止められない。そこで [cancel] と [stopMicNow](runtime の close も)は、**呼び出しスレッドから同期に**許可の番号を進め、
+ * [openMic] は許可の照合と `AudioSource.start` を同じロックで行う。取消側は「許可を進める → `audio.stop()`」の順なので、
+ * 開く処理が先なら stop が止め、取消が先なら開かない(許可が無効なら取消として終える)。許可は [doStart] の時点で控える。
+ *
  * ## 停止の順序(どの状態からでも同じ。[finish])
  * 世代を進める → マイクを止めて release → `abortInFlight()` → 最良努力で `cancel(id)` → 再生停止 → 画面に反映 → `onEnded`。
  * 各段は例外を握りつぶして次へ進む。**マイクの停止は通信の完了に依存しない。**
@@ -73,6 +79,9 @@ class VoiceSession(
 
     // ---- セッション共通(セッションのスレッドでだけ触る)
     private var gen = 0
+
+    /** [doStart] の時点で控えた「マイクを開いてよい」許可([micPermit])。作成が成功したあとの [openMic] で照合する */
+    private var openPermit = 0
     private var _phase = VoicePhase.IDLE
     private var sessionId: String? = null
     private var autoStarted = false
@@ -116,6 +125,11 @@ class VoiceSession(
     private var replyAudio: ReplyAudioInfo? = null
     private var fetchToken = 0
 
+    // ---- スレッドをまたぐ「マイクを開く許可」。取消・close・stopMicNow が、呼び出しスレッドから同期で進める。
+    // 作成の成功の処理がセッションのキューに積まれたまま取消が来ても、その処理は許可の照合で弾かれる(マイクは開かない)。
+    private val micLock = Any()
+    private var micPermit = 0
+
     /** 現在の内部状態。**セッションのスレッドで読む**(テスト用の公開) */
     val phase: VoicePhase get() = _phase
 
@@ -132,7 +146,21 @@ class VoiceSession(
 
     /** B を離れる・背面・待機・設定画面。どの状態からでもマイクを止めて release し、IDLE に戻す。冪等。 */
     fun cancel() {
+        revokeMicPermit() // 呼び出しスレッドで同期に。キューに積まれた作成成功の処理(onCreated → openMic)にマイクを開かせない
         scheduler.post { doCancel() }
+    }
+
+    /**
+     * セッションのスレッドを介さずにマイクを止める(最後の防衛線)。冪等。**開く許可を先に取り消してから**止めるので、
+     * まだ録音を始めていない作成成功の処理が、止めたあとでマイクを開くことはない。ホストへは何も送らない([cancel] と併せて使う)。
+     */
+    fun stopMicNow() {
+        revokeMicPermit()
+        safe { audio.stop() }
+    }
+
+    private fun revokeMicPermit() {
+        synchronized(micLock) { micPermit++ }
     }
 
     /** ERROR 表示のタップ。直前と同じ起点で新しいセッションを始める(利用者の操作なので `autoStarted = false`)。ERROR 以外では何もしない。 */
@@ -151,6 +179,7 @@ class VoiceSession(
         startReason = reason
         noticeId = notice?.takeIf { VoiceLimits.NOTICE_ID_REGEX.matches(it) }
         autoStarted = auto
+        openPermit = synchronized(micLock) { micPermit } // これ以後の cancel / stopMicNow / close で、この許可は無効になる
         _phase = VoicePhase.PREPARING
         val g = gen
         arm(Timer.TOTAL, sessionMaxMs) { onTotalTimeout() }
@@ -292,13 +321,27 @@ class VoiceSession(
 
     private fun openMic(g: Int) {
         try {
-            audio.start(
-                onPcm = { bytes ->
-                    val copy = bytes.copyOf() // AudioRecord の読み取りバッファは使い回される
-                    scheduler.post { onPcm(g, copy) }
-                },
-                onError = { code -> scheduler.post { onMicError(g, code) } },
-            )
+            // 許可の照合と開始を同じロックで行う。取消側は「許可を取り消す → audio.stop()」の順なので、
+            // 開始がロックの中で済んでいれば stop が止め、取り消しが先なら開始しない(空振りの stop のあとに開くことがない)
+            val permitted = synchronized(micLock) {
+                if (micPermit != openPermit) {
+                    false
+                } else {
+                    audio.start(
+                        onPcm = { bytes ->
+                            val copy = bytes.copyOf() // AudioRecord の読み取りバッファは使い回される
+                            scheduler.post { onPcm(g, copy) }
+                        },
+                        onError = { code -> scheduler.post { onMicError(g, code) } },
+                    )
+                    true
+                }
+            }
+            if (!permitted) {
+                // 取消(離脱・背面・close・stopMicNow)が先に来ていた。録音せず、取消として終える(ホストのセッションは finish が DELETE する)
+                finish(VoicePhase.IDLE, null, null, "cancelled")
+                return
+            }
         } catch (e: SecurityException) {
             fail(VoiceErrorCode.MIC_PERMISSION, "mic: permission")
             return
@@ -321,7 +364,7 @@ class VoiceSession(
         emit() // マイク使用中のスナップショットの通知が失敗したら、ここでセッションが終わっている
         if (!_phase.isMicPhase) return
         try {
-            listener.onMicOpened()
+            listener.onMicOpened(autoStarted)
         } catch (_: Exception) {
             // 開始音を鳴らせなかった(利用者に録音の合図が届かない)まま録音を続けない。例外のメッセージは診断に載せない
             fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: start tone notify failed")

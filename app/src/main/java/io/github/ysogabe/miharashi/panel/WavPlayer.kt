@@ -88,15 +88,24 @@ class WavPlayer internal constructor(
     private val sleepMs: (Long) -> Unit = { Thread.sleep(it) },
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val threadFactory: (Runnable) -> Thread = { r -> Thread(r, "daidai-wav").apply { isDaemon = true } },
+    /** フォーカスの取得の呼び出し(取得の最中に [stop] が走る競合の試験で、ここで止める) */
+    private val requestFocusCall: (AudioFocusRequest) -> Int = { audioManager.requestAudioFocus(it) },
 ) : ReplyPlayer {
     constructor(context: Context) : this(
         context.getSystemService(AudioManager::class.java),
         AudioTrackOutput.factory(),
     )
 
+    /**
+     * 1 回の再生。資源([track]・[focus])の公開と取消は、この Run の monitor で直列にする:
+     * 作成中([requestFocus] や `trackFactory.create`)に [stop] が走っても、作成側が公開しようとした時点で取消済み
+     * ([cancelled] か [cleaned])だと分かり、作ったその場で解放する。公開が先なら [cleanup] が解放する。どちらでも漏れない。
+     */
     private class Run(val onDone: (Boolean) -> Unit) {
         val done = AtomicBoolean(false)
-        val cleaned = AtomicBoolean(false)
+
+        /** [cleanup] 済み(Run の monitor の中でだけ読み書きする) */
+        var cleaned = false
 
         @Volatile
         var track: PcmTrack? = null
@@ -104,7 +113,7 @@ class WavPlayer internal constructor(
         @Volatile
         var focus: AudioFocusRequest? = null
 
-        /** 止められた(以後 `onDone` は呼ばない) */
+        /** 止められた(以後 `onDone` は呼ばない)。書くのは Run の monitor の中だけ */
         @Volatile
         var cancelled = false
     }
@@ -132,7 +141,7 @@ class WavPlayer internal constructor(
 
     override fun stop() {
         val run = synchronized(lock) { current.also { current = null } } ?: return
-        run.cancelled = true
+        synchronized(run) { run.cancelled = true }
         run.done.set(true) // 以後 onDone は呼ばない
         cleanup(run)
     }
@@ -140,11 +149,18 @@ class WavPlayer internal constructor(
     private fun runPlayback(run: Run, wav: ByteArray, info: WavInfo) {
         var success = false
         try {
-            run.focus = requestFocus(run)
+            val focus = requestFocus(run)
+            if (focus != null && !publishFocus(run, focus)) { // 取得の間に止められた: 取れたその場で手放す
+                releaseFocus(focus)
+                return
+            }
             if (run.cancelled) return
             val track = trackFactory.create(info.sampleRate, BUFFER_BYTES) ?: return
-            run.track = track
-            if (run.cancelled) { cleanup(run); return }
+            if (!publishTrack(run, track)) { // 作成の間に止められた: 作ったその場で止めて release
+                releaseTrack(track)
+                return
+            }
+            if (run.cancelled) return
             track.play()
             val startedAtMs = nowMs()
             var offset = info.dataOffset
@@ -189,35 +205,64 @@ class WavPlayer internal constructor(
                 .setOnAudioFocusChangeListener { change ->
                     if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
                         // 他に奪われた: 止めて失敗として知らせる(テキストは画面に残る)
-                        run.cancelled = true
+                        synchronized(run) { run.cancelled = true }
                         cleanup(run)
                         finish(run, false)
                     }
                 }
                 .build()
-            audioManager.requestAudioFocus(request)
+            requestFocusCall(request)
             request // 取れなくても(FAILED でも)鳴らす。手放しだけは必ず行う
         } catch (_: Exception) {
             null
         }
     }
 
+    /** フォーカスを Run に公開する。止められていた([cancelled] か [cleaned])なら公開せず false(呼び出し側がその場で手放す) */
+    private fun publishFocus(run: Run, focus: AudioFocusRequest): Boolean = synchronized(run) {
+        if (run.cancelled || run.cleaned) {
+            false
+        } else {
+            run.focus = focus
+            true
+        }
+    }
+
+    /** 出力を Run に公開する。止められていたら公開せず false(呼び出し側がその場で release する) */
+    private fun publishTrack(run: Run, track: PcmTrack): Boolean = synchronized(run) {
+        if (run.cancelled || run.cleaned) {
+            false
+        } else {
+            run.track = track
+            true
+        }
+    }
+
     /** 出力の停止・release とフォーカスの解放。一度だけ。どのスレッドから呼んでもよい */
     private fun cleanup(run: Run) {
-        if (!run.cleaned.compareAndSet(false, true)) return
-        val track = run.track
-        if (track != null) {
-            try {
-                track.stopNow()
-            } catch (_: Exception) {
-            } finally {
-                try { track.release() } catch (_: Exception) { }
-            }
+        val track: PcmTrack?
+        val focus: AudioFocusRequest?
+        synchronized(run) { // 公開済みの資源の取り出しと cleaned の設定を一緒に行う。これ以後の公開は拒まれる
+            if (run.cleaned) return
+            run.cleaned = true
+            track = run.track
+            focus = run.focus
         }
-        val focus = run.focus
-        if (focus != null) {
-            try { audioManager.abandonAudioFocusRequest(focus) } catch (_: Exception) { }
+        if (track != null) releaseTrack(track)
+        if (focus != null) releaseFocus(focus)
+    }
+
+    private fun releaseTrack(track: PcmTrack) {
+        try {
+            track.stopNow()
+        } catch (_: Exception) {
+        } finally {
+            try { track.release() } catch (_: Exception) { }
         }
+    }
+
+    private fun releaseFocus(focus: AudioFocusRequest) {
+        try { audioManager.abandonAudioFocusRequest(focus) } catch (_: Exception) { }
     }
 
     private fun finish(run: Run, success: Boolean) {

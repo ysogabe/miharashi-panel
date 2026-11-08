@@ -30,6 +30,23 @@ class Sim : SessionScheduler, Clock {
         return Cancelable { t.cancelled = true }
     }
 
+    /** 今この時刻に実行できるタスクを**1 つだけ**実行する(競合の再現用: キューに積んだままにして、別の呼び出しを挟む)。実行したら true */
+    fun step(): Boolean {
+        while (true) {
+            val t = tasks.peek() ?: return false
+            if (t.at > now) return false
+            tasks.poll()
+            if (t.cancelled) continue
+            t.run()
+            return true
+        }
+    }
+
+    /** タスクを実行せずに時刻だけ進める([step] と組み合わせる) */
+    fun tick(ms: Long) {
+        now += ms
+    }
+
     /** 今この時刻に実行できるものをすべて実行する */
     fun settle() = advance(0)
 
@@ -173,6 +190,9 @@ class FakeWorker(private val sim: Sim, private val bridge: FakeBridge) : Session
 
     private val inflight = mutableListOf<Pending>()
 
+    /** 通信中(まだ完了していない)の呼び出しの数 */
+    val inflightCount: Int get() = inflight.size
+
     /** 応答なし(遅延 null)で止まっている呼び出しの数 */
     val heldCount: Int get() = inflight.count { it.timer == null }
 
@@ -306,6 +326,7 @@ class FakePlayer(private val log: MutableList<String>) : ReplyPlayer {
 class RecordingListener(private val sim: Sim, private val log: MutableList<String>) : VoiceSessionListener {
     val snaps = mutableListOf<VoiceSnapshot>()
     val micOpenedAt = mutableListOf<Long>()
+    val micOpenedAuto = mutableListOf<Boolean>()
     val ended = mutableListOf<Pair<Boolean, String>>()
 
     /** true を返したスナップショットでは、記録したあとに例外を投げる(リスナーの失敗の再現) */
@@ -319,9 +340,10 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
         if (throwOnSnapshot?.invoke(snapshot) == true) throw IllegalStateException("snapshot failed: ${snapshot.state}")
     }
 
-    override fun onMicOpened() {
+    override fun onMicOpened(autoStarted: Boolean) {
         log += "micOpened"
         micOpenedAt += sim.now
+        micOpenedAuto += autoStarted
         if (throwOnMicOpened) throw IllegalStateException("tone failed: secret-listener-message")
     }
 
