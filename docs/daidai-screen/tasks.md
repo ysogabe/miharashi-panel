@@ -31,8 +31,9 @@ AC7(1 往復の通し)、AC9 の実機項目、AC1/AC3/AC4/AC8 の実機項目�
 ## 全体レビューと最終確認
 
 - 全体レビュー(PRD 突き合わせ、Sol): 必須2・推奨2 をすべて採用して修正(1dcda96, 8a0d4a1)。必須: 未読の既読処理が件数で判定され、窓が入れ替わると新着が 2 秒未満で既読になる(AC16)/install.sh が `--token-file` だけ指定でトークン衝突を保存する(AC20)。推奨: install.sh の URL 検証が Settings より緩い/AC19 の無発話抑止を実際の VoiceSession で通すテストが無い。あわせて時間依存テストの不安定さ(BridgeHealthTest ほか)を緩和。
+- 再レビュー(Sol)2 回: 1 回目 必須1(既読期限が既読 ID の再出現で延び続ける)・推奨3 を修正(914828e)、2 回目(最終確認)は必須なし・推奨1(install.sh の URL 規則が Unicode の空白・制御文字で Settings と不一致)。推奨1は修正上限(再レビュー 2 回)に達したため**見送り**。理由: 食い違いは「スクリプトが受理するが Settings が拒否する」向きで、アプリは URL を空扱いにして音声機能を無効のままにするだけ(安全側)。USAGE に trim の差を記載済み。
 - 全体セキュリティレビュー(Opus、`security-review`、c805641): `PREFLIGHT OK`、High/Medium/Low とも指摘なし。
-- 最終確認(8a0d4a1、clean ビルド): `testDebugUnitTest assembleDebug` 846 件・失敗 0・エラー 0・スキップ 0。`scripts/test-install.sh` 206 件成功。`shellcheck` 警告 0。
+- 最終確認(914828e、clean ビルド): `testDebugUnitTest assembleDebug` 856 件・失敗 0・エラー 0・スキップ 0。`scripts/test-install.sh` 332 件成功。`shellcheck` 警告 0。
 - 見送り(意図的): R18(ゲート待ちの再評価、AC17)= 設計 O-9 の推奨どおり初版では行わない。R19(連続会話)= 初版範囲外。
 
 ## 残件(本タスクの範囲外・未実施)
