@@ -116,11 +116,15 @@ class KioskClient(
 class SseLimitException(message: String) : IOException(message)
 
 /** SSE のイベント 1 つ。`id` はこのイベントの `id:` 行の値(無ければ null)。 */
-data class SseEvent(val name: String, val data: String, val id: String?)
+data class SseEvent(val name: String, val data: String, val id: String?) {
+    /** data は通知本文を含みうるので出さない(`DaidaiNotice.toString()` の秘匿を迂回させない)。 */
+    override fun toString(): String = "SseEvent(name=$name, id=$id, dataLength=${data.length})"
+}
 
 /**
- * SSE の行を読み、イベントが 1 つまとまったら返す。コメント(`:` で始まる行)は捨てる。
- * 1 行は 8 KB(UTF-8)、1 イベント(`event:` `id:` `data:` の行と改行)は 16 KB まで。超えたら [SseLimitException]。
+ * SSE の行を読み、イベントが 1 つまとまったら返す。コメント(`:` で始まる行)の内容は捨てる。
+ * 1 行は 8 KB(UTF-8)、1 イベント(空行までの全行。コメント行も含む)は 16 KB まで。超えたら [SseLimitException]。
+ * 行の終端は呼び出し側から渡されないので、CRLF を想定して 1 行ごとに +2 バイトで数える(受信バイト数を過小に数えない側に倒す)。
  */
 class SseParser {
     private var event = "message"
@@ -142,9 +146,9 @@ class SseParser {
         }
         val bytes = utf8Length(line)
         if (bytes > MAX_LINE_BYTES) throw SseLimitException("SSE の 1 行が上限($MAX_LINE_BYTES バイト)を超えた")
-        if (line.startsWith(":")) return null
-        eventBytes += bytes + 1
+        eventBytes += bytes + LINE_TERMINATOR_BYTES
         if (eventBytes > MAX_EVENT_BYTES) throw SseLimitException("SSE の 1 イベントが上限($MAX_EVENT_BYTES バイト)を超えた")
+        if (line.startsWith(":")) return null
         val name = line.substringBefore(':')
         val value = line.substringAfter(':', "").removePrefix(" ")
         when (name) {
@@ -172,6 +176,9 @@ class SseParser {
     companion object {
         const val MAX_LINE_BYTES = 8 * 1024
         const val MAX_EVENT_BYTES = 16 * 1024
+
+        /** 行の終端の想定バイト数(CRLF) */
+        private const val LINE_TERMINATOR_BYTES = 2
 
         private fun utf8Length(s: String): Int {
             var n = 0

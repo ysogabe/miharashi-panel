@@ -203,6 +203,13 @@ class Settings(context: Context) {
             val host = parsed.host.orEmpty()
             if (host.isEmpty()) return "ブリッジの URL にホストが無い"
             if (!HOST.matches(host)) return form
+            // URL.port は未指定も「:-1」も -1 になるので、authority の文字列でポートの明示を見分ける
+            val hostPort = authority.substringAfterLast(']', authority) // IPv6 リテラルの `]` の後ろだけを見る
+            if (':' in hostPort) {
+                val portText = hostPort.substringAfterLast(':')
+                if (portText.isEmpty() || !portText.all { it in '0'..'9' }) return "ブリッジの URL のポートが正しくない"
+                if (portText.length > 5 || portText.toInt() !in 1..65535) return "ブリッジの URL のポートが範囲外"
+            }
             if (parsed.port != -1 && parsed.port !in 1..65535) return "ブリッジの URL のポートが範囲外"
             return null
         }

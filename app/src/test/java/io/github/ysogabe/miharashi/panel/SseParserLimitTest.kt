@@ -94,7 +94,7 @@ class SseParserLimitTest {
     @Test
     fun eventLimitIsSixteenKilobytes() {
         val p = SseParser()
-        val chunk = "data: " + "a".repeat(4_000) // 4006 バイト + 改行 1
+        val chunk = "data: " + "a".repeat(4_000) // 4006 バイト + 終端 2(CRLF 想定)
         var sent = 0
         try {
             while (true) {
@@ -103,20 +103,96 @@ class SseParserLimitTest {
                 if (sent > 10) fail("上限に達しない")
             }
         } catch (_: SseLimitException) { }
-        assertEquals("4007 バイトずつで 4 行(16028)目まで、5 行目で超過", 4, sent)
+        assertEquals("4008 バイトずつで 4 行(16032)目まで、5 行目で超過", 4, sent)
         // ちょうど上限は通る
         val q = SseParser()
-        val line = "data: " + "a".repeat(8_192 - 6 - 1)
+        val line = "data: " + "a".repeat(8_192 - 6 - 2)
         assertNull(q.next(line))
         assertNull(q.next(line)) // 合計 8192 + 8192 = 16384 = 上限ちょうど
-        assertEquals("a".repeat(8_185) + "\n" + "a".repeat(8_185), q.next("")?.data)
+        assertEquals("a".repeat(8_184) + "\n" + "a".repeat(8_184), q.next("")?.data)
         val r = SseParser()
         r.next(line)
         r.next(line)
         try {
+            r.next("")
             r.next("id:")
+            // 空行でリセットされるので超過しない
+        } catch (_: SseLimitException) { fail("空行で数え直す") }
+        val s = SseParser()
+        s.next(line)
+        s.next(line)
+        try {
+            s.next("id:")
             fail("1 バイトでも超えたら超過")
         } catch (_: SseLimitException) { }
+    }
+
+    @Test
+    fun crlfTerminatorsCountTwoBytesEach() {
+        // `id:\r\n` を 4,000 行 + `data: x\r\n\r\n` は受信 20 KB 超なので超過にする
+        val p = SseParser()
+        try {
+            repeat(4_000) { p.next("id:") }
+            p.next("data: x")
+            fail("20 KB 超は通さない")
+        } catch (_: SseLimitException) { }
+        // 同じ行数でも合計が 16 KB 以内(2,000 行 × 5 バイト = 10,000)なら通る
+        val q = SseParser()
+        repeat(2_000) { q.next("id:") }
+        q.next("data: x")
+        assertEquals("x", q.next("")?.data)
+    }
+
+    @Test
+    fun manyCommentLinesCountTowardsTheEventLimit() {
+        val p = SseParser()
+        try {
+            repeat(5_000) { p.next(": ") } // 1 行 4 バイト × 5,000 = 20,000
+            fail("コメントだけでも上限")
+        } catch (_: SseLimitException) { }
+        // データ行の前後にコメントを大量に挟んでも同じ
+        val q = SseParser()
+        q.next("data: x")
+        try {
+            repeat(100) { q.next(": keepalive " + "k".repeat(1_000)) }
+            fail("コメントも数える")
+        } catch (_: SseLimitException) { }
+    }
+
+    @Test
+    fun commentsResetAtEachBlankLine() {
+        val p = SseParser()
+        repeat(2_000) {
+            assertNull(p.next(": ping"))
+            assertNull(p.next(""))
+        }
+        assertNull(p.next(": ping"))
+        assertNull(p.next("data: x").also { assertNull(p.next(": ping")) })
+        assertEquals("x", p.next("")?.data)
+    }
+
+    @Test
+    fun normalKeepaliveStreamNeverHitsTheLimit() {
+        val p = SseParser()
+        val big = "data: " + "a".repeat(7_000)
+        repeat(500) {
+            assertNull(p.next(": ping"))
+            assertNull(p.next(""))
+            assertNull(p.next("id: $it"))
+            assertNull(p.next("event: status"))
+            assertNull(p.next(big))
+            assertEquals(7_000, p.next("")!!.data.length)
+        }
+    }
+
+    @Test
+    fun toStringDoesNotLeakData() {
+        val e = SseEvent("status", "SECRET-NOTICE-BODY", "5")
+        val text = e.toString()
+        assertFalse(text, text.contains("SECRET"))
+        assertTrue(text, text.contains("status") && text.contains("5") && text.contains("dataLength=18"))
+        val parsed = feed(SseParser(), "id: 8", "event: status", "data: SECRET-NOTICE-BODY", "")
+        assertFalse(parsed.toString().contains("SECRET"))
     }
 
     @Test
@@ -126,14 +202,6 @@ class SseParserLimitTest {
             assertNull(p.next("data: " + "a".repeat(8_000)))
             assertTrue(p.next("")!!.data.length == 8_000)
         }
-    }
-
-    @Test
-    fun commentsDoNotCountTowardsEvent() {
-        val p = SseParser()
-        assertNull(p.next("data: x"))
-        repeat(100) { assertNull(p.next(": keepalive " + "k".repeat(1_000))) }
-        assertEquals("x", p.next("")?.data)
     }
 
     // ---- BoundedLineReader ----

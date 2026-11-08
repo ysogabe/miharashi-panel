@@ -218,7 +218,15 @@ class DaidaiSettingsTest {
             "http://host?x=1", "http://host/?", "http://host/p?token=abc", "http://host#frag", "http://host/#", "http://host/p#x",
             "http://ho st", "http://host/a b", "http://host\nx", "http://ho\tst", "http://host\\@evil", "http://host/\u0000",
             "http://host:99999", "http://host:0x", "http://ホスト",
+            "http://host:-1", "http://host:0", "http://host:65536", "http://host:abc", "http://host:", "http://host:/path",
+            "http://host:-1/p", "http://[::1]:-1", "http://[::1]:", "http://[::1]:0", "http://[::1]:65536", "http://host:+80", "http://host:000000080",
         ).forEach { assertNotNull("rejected: " + it.replace("\n", "\\n"), Settings.validateDaidaiUrl(it)) }
+    }
+
+    @Test
+    fun urlPortMustBeAbsentOrWithin1To65535() {
+        listOf("http://host", "http://host/", "http://host:1", "http://host:65535", "http://host:8800/p", "http://[::1]", "http://[::1]/p", "http://[::1]:65535")
+            .forEach { assertNull(it, Settings.validateDaidaiUrl(it)) }
     }
 
     @Test
