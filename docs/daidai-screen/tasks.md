@@ -18,7 +18,7 @@
 | T6 | 音声コア: `VoiceSession` 状態機械(単一スレッド・世代番号・単調性・期限・停止順序)と interface(`AudioSource` / `BridgeApi` / `ReplyPlayer` / `Clock`)＋フェイクによる単体テスト | AC4, AC6, AC8 | T5 | full | 完了 | f3a1ddd | 55b148d, 48d35c0, 954096e | レビュー(Sol): 必須3(録音中のリスナー例外を握りつぶして録音が続く、最初の ack より先に SSE speech が届くと無発話タイマーが再設定され発話中に no_speech、返答音声失敗が画面に出ない/tts_failed がコード化されない)・推奨1(AudioSource.stop の契約)をすべて採用して修正。テスト 561 件全通過。設計からの判断: 開始音後 400ms の録音を捨てる、キュー 64,000 バイト、reply_timeout 上限 60 秒・既定 45 秒、未知のホストコードは汎用表示+診断のみ、DELETE は終了時すべてで送る。**T8 向け注意**: MicAudioSource は stop が失敗しても finally で release、stop 失敗時の release をそのテストで確認 |
 | T7 | `BridgeClient`(HTTP + SSE、`Last-Event-ID` 再生、冪等再送、URL は自前で組む・リダイレクト非追従・検証)と WAV 検証、MockWebServer による S1〜S15 の試験 | AC5, AC15, AC20 | T6 | full | 完了 | 954096e | 73bf4ad, 892c6a5 | レビュー(Sol): 必須2(接続登録後〜I/O 開始前の abort 競合、JDK の POST 暗黙再送と VoiceSession の再送の重複)・推奨5(S6/S13 の競合・負荷依存、再生期限が宣言値基準、WAV 120 秒の丸め、abort 後の再利用テスト)をすべて採用して修正。テスト 666 件全通過、競合テストは 3 回連続で全通過。設計からの変更: 再生期限は実データの長さ+5 秒、POST はストリーミング送信+Connection: close、abort 世代で取消済み呼び出しの接続を禁止。S1〜S15 は VoiceBridgeScenarioTest で Panel 側を自動確認(S12 のホスト側置換はホストの契約)。実機で未確認: Android(OkHttp 実装)での disconnect/connect の挙動 |
 | T8 | Android 実体と結線: `MicAudioSource`(AudioRecord)、`WavPlayer`(AudioTrack、メモリ上)、開始音、`RECORD_AUDIO` 宣言、`install.sh`(権限付与・既存設定を消さない)、`DaidaiController` への音声結線 | AC4, AC14 | T7 | full | 完了 | 892c6a5 | fd8f8aa, 860bf57, 1fa5678 | レビュー(Sol)3 回: 1 回目 必須4(取消後にマイクが開く競合、WavPlayer 停止と資源作成の競合、自動マイク起動の記録が別セッション状態に依存、install.sh の書き込み途中失敗で既存設定が壊れる)+推奨1(破棄後の遅い作成成功が DELETE されない)→修正。2 回目(再レビュー)必須1(audio.start() 中に micLock を保持しメインの cancel が待たされ ANR の恐れ)+推奨1(DeleteOnCloseBridge の close と配送の間の DELETE 漏れ)→修正。修正上限に達したため 3 回目のレビューは行わず、最終の全体レビュー(PRD 突き合わせ+security-review)で再確認する。テスト 811 件全通過、競合テストは 3 回連続で全通過、install.sh は shellcheck ゼロ・test-install.sh 141 件通過。設計からの変更: 結線を新設 DaidaiVoice に置く、AudioSource.start に isCurrent を追加、取消が startRecording() 中に入ると戻るまで物理的に動く小窓が残る(AudioRecord.stop が同じネイティブロックを取るため。KDoc に明記)。実機で未確認: AudioRecord の warm-up、開始音との被り、スピーカー音量、LineageOS でのマイク可否(R-1/R-2) |
-| T9 | 仕上げ: 未読チップ(R17)、文書(`DESIGN.md` / `USAGE.md` / `IDLE_CLOCK.md` / `README.md`) | AC16 | T8 | full | 未着手 | | | R18(ゲート待ちの再評価・AC17)は設計 O-9 の推奨どおり初版では見送り。R19 は初版範囲外。R20(AC18)は T2 に含める |
+| T9 | 仕上げ: 未読チップ(R17)、文書(`DESIGN.md` / `USAGE.md` / `IDLE_CLOCK.md` / `README.md`) | AC16 | T8 | full | 未着手 | | | R18(ゲート待ちの再評価・AC17)は設計 O-9 の推奨どおり初版では見送り。R19 は初版範囲外。R20(AC18)は T2 に含める 未読チップは「だいだい N」(9 件超は「9+」)、ヘッダーの WIFI 表示と時刻の間。ローカル既読は B を 2 秒表示したら。 |
 
 ## 実機確認(自動化できない AC)
 
@@ -27,3 +27,19 @@ AC7(1 往復の通し)、AC9 の実機項目、AC1/AC3/AC4/AC8 の実機項目�
 ## 進行ログ
 
 - T0: JDK 17(`17.0.20.1`)、adb、Android SDK を導入。ベースラインは 83 テスト全通過・assembleDebug 成功。Echo Show 5 の IP は依頼にも設計書にも記載がなく、`adb devices` / mDNS では見つからない。LAN の総当たりスキャンはしない。
+
+## 全体レビューと最終確認
+
+- 全体レビュー(PRD 突き合わせ、Sol): 必須2・推奨2 をすべて採用して修正(1dcda96, 8a0d4a1)。必須: 未読の既読処理が件数で判定され、窓が入れ替わると新着が 2 秒未満で既読になる(AC16)/install.sh が `--token-file` だけ指定でトークン衝突を保存する(AC20)。推奨: install.sh の URL 検証が Settings より緩い/AC19 の無発話抑止を実際の VoiceSession で通すテストが無い。あわせて時間依存テストの不安定さ(BridgeHealthTest ほか)を緩和。
+- 全体セキュリティレビュー(Opus、`security-review`、c805641): `PREFLIGHT OK`、High/Medium/Low とも指摘なし。
+- 最終確認(8a0d4a1、clean ビルド): `testDebugUnitTest assembleDebug` 846 件・失敗 0・エラー 0・スキップ 0。`scripts/test-install.sh` 206 件成功。`shellcheck` 警告 0。
+- 見送り(意図的): R18(ゲート待ちの再評価、AC17)= 設計 O-9 の推奨どおり初版では行わない。R19(連続会話)= 初版範囲外。
+
+## 残件(本タスクの範囲外・未実施)
+
+1. ホスト側ブリッジ(local-model-lab)の実装と、Panel との実物の接続確認(AC7 の 1 往復、設計 §5.2 の契約の結合試験。ホスト側で S1〜S15 を使う)。
+2. Miharashi 本体の panel API への `daidai` ブロック(設計 §5.3: rev/notices/ack/unseen/avatar_pose、1 秒以内の SSE、投入口の別資格情報とレート制限)の追加。
+3. Echo Show 5 実機での確認: AC1(スワイプの感触・システムジェスチャ除外 R-3)、AC2(A の回帰)、AC4(マイク・開始音・録音インジケータ)、AC8、AC9(遮光した照度ゲート、TYPE_LIGHT の初回イベント O-13)、AC14(権限付与・録音ファイルが残らないこと)、時計中の自動切替とバックライト、AudioRecord の warm-up(開始音後 400ms の破棄で足りるか)、マイクオフスイッチの検出、スピーカー音量。**実機 192.168.0.36 は adb 接続できたが、端末のアプリとこちらの debug ビルドの署名が違い(INSTALL_FAILED_UPDATE_INCOMPATIBLE)入れられなかった。入れるにはアンインストールが必要で端末の設定(URL・トークン)が消えるため、利用者の判断待ちとして実施していない。**
+4. アバターの本物の絵(現状は Canvas 描画のプレースホルダ。設計 O-6)と、#97 の `avatar_pose` 語彙の確定。
+5. 設計の未決事項のうち、利用者判断が要るもの: O-4(転送方式 T1/T2。Panel は T1 を実装)、O-5(reply_timeout_s の実測)、O-11(平文 http で録音を流すことの許容)。
+6. ネットワーク ADB は導入後に無効にする(USAGE.md に記載)。
