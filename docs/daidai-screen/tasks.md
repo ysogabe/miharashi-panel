@@ -10,7 +10,7 @@
 | ID | 内容 | AC | 依存 | 種類 | 状態 | 開始 SHA | コミット | メモ |
 |---|---|---|---|---|---|---|---|---|
 | T0 | Android ビルド環境の導入とベースライン確認、実機への到達確認 | AC2(前提) | - | 管理(自分で実行) | 完了 | 7dccc0c | (このコミット) | ベースライン: 83 テスト 0 失敗 0 スキップ、assembleDebug 成功(初回 3 分 27 秒)。実機: IP 不明のため未確認 |
-| T1 | 土台: `Settings` のデータクラス化＋daidai_* キーと検証(URL・トークン・範囲)、`KioskStatus.parse` の `daidai` ブロック＋fixtures、`SseParser` の `id:` 保持と行・イベント上限 | AC11, AC12(parse), AC20(設定側) | T0 | full | 未着手 | | | |
+| T1 | 土台: `Settings` のデータクラス化＋daidai_* キーと検証(URL・トークン・範囲)、`KioskStatus.parse` の `daidai` ブロック＋fixtures、`SseParser` の `id:` 保持と行・イベント上限 | AC11, AC12(parse), AC20(設定側) | T0 | full | 実装中 | 3e4d41f | | |
 | T2 | 判定部(純 Kotlin): `PresenceGate` / `AmbientLightGate` / `LuxDarkTracker` / `NoticeTracker`(rev・基準・age_s・low) / `AutoSwitchPolicy`(マイク歯止め含む) | AC9(単体), AC10, AC12, AC18, AC19 | T1 | full | 未着手 | | | |
 | T3 | ページ: `SwipeDecision` / `PageController` / `PagerLayout`、`PanelView.idleSuspended`・`gestureSwallowed`、`PanelActivity` の載せ替え、空の B。A の回帰を最優先 | AC1, AC2, AC3 | T1 | full | 未着手 | | | |
 | T4 | B の画面: `DaidaiLayout` / `DaidaiView` / `DaidaiUiState` / `AvatarAssets`、未設定の案内、通知カード、状態チップ、マイク使用中表示 | AC6(描画), AC13(表示) | T3 | full | 未着手 | | | |
