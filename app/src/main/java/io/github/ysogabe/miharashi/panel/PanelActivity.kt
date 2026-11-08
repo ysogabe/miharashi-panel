@@ -23,6 +23,9 @@ import kotlin.math.abs
  */
 class PanelActivity : Activity() {
     private lateinit var view: PanelView
+    private lateinit var daidaiView: DaidaiView
+    private lateinit var pager: PagerLayout
+    private val pages = PageController()
     private lateinit var settings: Settings
     private var sync: KioskSync? = null
     private var lastEndpoint: Pair<String, String>? = null
@@ -35,6 +38,14 @@ class PanelActivity : Activity() {
     private var active = false
     private var automaticRequest: AtomicBoolean? = null
     private val darknessDeadline = Runnable { checkDarkness() }
+
+    /** B に落ち着いている間だけ、1 秒ごとに無操作を確かめる(A へ戻す)。 */
+    private val pageTick = object : Runnable {
+        override fun run() {
+            pages.tick(SystemClock.elapsedRealtime())
+            if (pages.settledPage == Page.B) main.postDelayed(this, PAGE_TICK_MS)
+        }
+    }
 
     private fun cancelAutomaticRequest() {
         automaticRequest?.set(true)
@@ -73,7 +84,19 @@ class PanelActivity : Activity() {
             },
             onSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
-        view.onSleepChanged = { sleeping = it; setBacklight(force = true) }
+        view.onSleepChanged = { sleeping = it; pager.dotsVisible = !it; setBacklight(force = true) }
+        daidaiView = DaidaiView(this)
+        // ページは常に A から始める。Intent の extras からページは指定できない(設計書 §4.1 の不変条件)
+        pager = PagerLayout(this, view, daidaiView, pages, gestureSwallowed = { view.gestureSwallowed })
+        pages.addListener(object : PageListener {
+            // B が少しでも見えている間は、A の無操作判定(待機時計)を保留する
+            override fun onBVisibleChanged(visible: Boolean) { view.idleSuspended = visible }
+
+            override fun onSettled(page: Page, reason: PageReason) {
+                main.removeCallbacks(pageTick)
+                if (page == Page.B) main.postDelayed(pageTick, PAGE_TICK_MS)
+            }
+        })
         light = LightSensorReader(this) { value ->
             lux = value
             if (active) {
@@ -84,12 +107,15 @@ class PanelActivity : Activity() {
                 checkDarkness()
             }
         }
-        setContentView(view)
+        setContentView(pager)
     }
 
     override fun onResume() {
         super.onResume()
         active = true
+        // 常に A から始める。A の無操作判定の保留も、ここで外す
+        pages.idleMs = settings.daidai.idleSeconds * 1000L
+        pages.onResume(SystemClock.elapsedRealtime())
         lux = null
         sleeping = false
         if (darkness.thresholdLux != settings.darkLux) darkness = DarknessPolicy(settings.darkLux)
@@ -120,6 +146,9 @@ class PanelActivity : Activity() {
 
     override fun onPause() {
         active = false
+        // ページを A に戻す(B のタイマーと、A の無操作判定の保留も止まる)
+        main.removeCallbacks(pageTick)
+        pages.onPause(SystemClock.elapsedRealtime())
         cancelAutomaticRequest()
         darkness.stopObserving()
         light.stop()
@@ -141,7 +170,9 @@ class PanelActivity : Activity() {
 
     private fun setBacklight(force: Boolean = false) {
         if (!active) return
-        view.contrastStrength = AmbientContrast.strength(lux, settings.autoBrightness)
+        val contrast = AmbientContrast.strength(lux, settings.autoBrightness)
+        view.contrastStrength = contrast
+        daidaiView.contrastStrength = contrast
         val value = AmbientBrightness.value(lux, settings.autoBrightness, sleeping)
         val old = window.attributes.screenBrightness
         // 小さな揺れでウィンドウ設定を書き換え続けない。モード切替と5%への移行は必ず反映。
@@ -179,6 +210,10 @@ class PanelActivity : Activity() {
             cancelAutomaticRequest()
         }
         checkDarkness()
+    }
+
+    companion object {
+        private const val PAGE_TICK_MS = 1_000L
     }
 
     /** immersive sticky: バーを隠し、端からのスワイプで一時的にだけ出す */

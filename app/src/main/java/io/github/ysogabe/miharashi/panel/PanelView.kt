@@ -89,6 +89,26 @@ class PanelView(
     /** 待機時計から戻るのに使った指が離れるまで、その操作をボタンに渡さない */
     private var swallowing = false
 
+    /**
+     * 待機時計から戻るのに使った指の操作の最中か(`swallowing` の読み取り専用の公開版)。
+     * `PagerLayout` は、これが true の間は横ドラッグを奪わない(時計を消した指でページが動かないように)。
+     * DOWN で `updateSleep()` してから立てるので、時計の満了直後で未描画の場合も同じ経路で守られる
+     */
+    val gestureSwallowed: Boolean get() = swallowing
+
+    /**
+     * true の間は無操作の判定を保留する(B の表示中)。時計に入らず、`onSleepChanged(true)` も起きない。
+     * 時計を出していたら、保留を始めた時点で操作盤に戻す。
+     * 保留を外すときは、先に無操作の時刻を「触れた扱い」にしてから外す(A に戻った瞬間に時計が一瞬出ないように)
+     */
+    var idleSuspended = false
+        set(value) {
+            if (field == value) return
+            if (!value) idle.touch(monotonicMs())
+            field = value
+            updateSleep()
+        }
+
     /** Activity が前面にいるか。背面のあいだは描画の更新もアニメーションの予約もしない */
     private var foregroundActive = true
 
@@ -146,7 +166,7 @@ class PanelView(
     }
 
     private fun updateSleep() {
-        val s = idle.isSleeping(monotonicMs())
+        val s = !idleSuspended && idle.isSleeping(monotonicMs())
         if (s == sleeping) return
         sleeping = s
         pressed = null
@@ -709,13 +729,13 @@ class PanelView(
     companion object {
         const val FAIL_FLASH_MS = 800L
         private const val ROTATION_ID = "rotation"
-        private val BASE_BG = Color.rgb(8, 11, 16)
-        private val BASE_PANEL = Color.rgb(20, 26, 34)
+        internal val BASE_BG = Color.rgb(8, 11, 16)
+        internal val BASE_PANEL = Color.rgb(20, 26, 34)
         private val BASE_KEY = Color.rgb(32, 42, 56)
-        private val BASE_FG = Color.rgb(230, 236, 242)
-        private val BASE_MUTED = Color.rgb(132, 146, 162)
-        private val DISABLED = Color.rgb(70, 80, 92)
-        private val ACCENT = Color.rgb(79, 195, 247)
+        internal val BASE_FG = Color.rgb(230, 236, 242)
+        internal val BASE_MUTED = Color.rgb(132, 146, 162)
+        internal val DISABLED = Color.rgb(70, 80, 92)
+        internal val ACCENT = Color.rgb(79, 195, 247)
         private val ACCENT_DIM = Color.rgb(24, 64, 88)
         private val OK = Color.rgb(102, 220, 120)
         private val WARN = Color.rgb(255, 196, 64)
