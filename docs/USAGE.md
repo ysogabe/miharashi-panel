@@ -52,13 +52,13 @@ debug APK は `app/build/outputs/apk/debug/app-debug.apk` に出力されます�
 
 このスクリプトはビルド済みの debug APK をインストールし、「他のアプリの上に表示」と、だいだい連携画面用のマイクの権限(`RECORD_AUDIO`)を与えて起動します。APK がなければ、先にビルドしてください。だいだい連携の接続先やトークンの設定、マイクの権限、止め方は [8. だいだい連携画面](#8-だいだい連携画面音声) にまとめています。
 
-本体の URL とトークンも一緒に設定する場合は、トークンを手元のファイルに用意して実行します。`--url` と `--token-file` は両方指定してください。この設定方法は `run-as` を使うため debug ビルド用です。
+本体の URL とトークンも一緒に設定する場合は、トークンを手元のファイルに用意して実行します。この設定方法は `run-as` を使うため debug ビルド用です。設定は**指定した項目だけ**を差し替え、端末にある既存の設定(指定しなかった `url`、`token`、`sleep_minutes`、`daidai_*` など)は消えません。`--url` と `--token-file` は、片方だけでも指定できます。
 
 ```sh
 ./scripts/install.sh --url http://192.168.0.132:8790 --token-file /path/to/panel.token
 ```
 
-時計表示までの分数を一緒に設定する例です。`--sleep-minutes` は URL・トークンと一緒に指定します。単独では設定されません。
+時計表示までの分数を設定する例です。`--sleep-minutes` は単独でも指定できます(ほかの設定は残ります)。
 
 ```sh
 ./scripts/install.sh --url http://192.168.0.132:8790 --token-file /path/to/panel.token --sleep-minutes 3

@@ -151,7 +151,7 @@ A と B の 2 画面を、`PagerLayout` に横に並べます。左へスワイ�
 | `PagerLayout` | 2 枚のページを並べ、横のドラッグで送る。水平移動が `touchSlop` を超え、かつ縦の 2 倍を超えたら横のドラッグとして奪い、子には `ACTION_CANCEL` を送る。短いタップは従来どおり |
 | `PageController` | 今どのページか、いつ落ち着いたか(ドラッグ・アニメーション・IDLE)。B の無操作タイマー(`daidai_idle_seconds`)。ページの確定通知は `onSettled` で一度だけ |
 | `SwipeDecision` | スワイプの確定条件(距離・速度・方向) |
-| `PanelView` | A。`idleSuspended`(B が見える間は無操作判定を保留)と `gestureSwallowed`(時計から戻る指ではページを動かさない)を足した。ほかは従来のまま |
+| `PanelView` | A。`idleSuspended`(B が見える間は無操作判定を保留)と `gestureSwallowed`(時計から戻る指ではページを動かさない)を足し、未読チップ用の `daidaiUnread` を足した。ほかは従来のまま |
 | `DaidaiView` / `DaidaiLayout` / `DaidaiUiState` | B の描画(アバター、通知カード、状態チップ、認識結果、返答)と表示データ。照度のコントラスト補正(`contrastStrength`)に従う |
 
 ページを変えるのは、利用者のスワイプ、通知による自動切替、B の無操作での復帰だけです。`onResume` は Intent に関係なく常に A から始め、Intent の extras でページの指定やマイクの起動はできません。
