@@ -133,6 +133,8 @@ class PanelActivity : Activity() {
         }
         lastEndpoint = endpoint
         view.configured = settings.configured
+        // B: ブリッジが未設定なら案内を出す(状態の組み立ては T5 で DaidaiController が引き継ぐ)
+        daidaiView.render(DaidaiUiState.forSettings(settings.daidai.isConfigured()))
         // 設定から戻ったときも、ここから数え直す
         view.sleepTimeoutMs = settings.sleepMinutes * 60_000L
         view.wake()
