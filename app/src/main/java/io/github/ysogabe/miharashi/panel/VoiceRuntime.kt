@@ -11,6 +11,11 @@ import java.util.concurrent.Executor
  * - `onPcm` はオーディオスレッドから呼ばれる。渡す配列は VoiceSession が**すぐコピーする**ので使い回してよい。
  *   1 回の大きさは 100 ms(3,200 バイト)前後を勧める(20 ms 刻みだとチャンクが細かくなりすぎる)。
  * - [stop] は**停止と release**を兼ねる。冪等(録音していなくても呼べる)・ノンブロッキング・通信に依存しない。
+ *   停止が内部で失敗して例外を投げても、呼び出し側(VoiceSession)は続行する(通信の中断・`DELETE`・再生停止を飛ばさない)。
+ *   そのため実装は、失敗しても `finally` で**必ず release する**(録音・リソースを残さない)。
+ *   **T8 の `MicAudioSource` の注意**: `AudioRecord.stop()` が例外を投げる状況で `release()` が呼ばれ、
+ *   [recording] が false に戻ることを、`MicAudioSource` 自身のテストで確認すること(VoiceSession のテストは
+ *   録音状態を false にしてから投げるフェイクを使うので、release の保証までは確かめていない)。
  * - [recording] は実際の録音状態(`recordingState == RECORDSTATE_RECORDING`)。画面の「● マイク使用中」はこれに連動する。
  */
 interface AudioSource {
@@ -74,8 +79,9 @@ class ExecutorSessionWorker(private val executor: Executor, private val schedule
 
 /**
  * 画面へ渡すスナップショット(不変)。[VoiceState] は表示用(PREPARING / DONE は IDLE に畳む)。
- * `error` は `state == ERROR` のとき、ホストの未知のコードなら null(画面は汎用の文言にする)。`DONE` でも返答音声の失敗は
- * `error = REPLY_AUDIO_FAILED` を載せる(テキストは残る)。`toString` に本文を含めない。
+ * `error` は `state == ERROR` のとき、ホストの未知のコードなら null(画面は汎用の文言にする)。`DONE`(表示は `IDLE`)でも、
+ * 返答音声の失敗(取得・検証・再生の失敗、`audio: null` に `audio_error` が付いた場合を含む)は `error = REPLY_AUDIO_FAILED` を載せ、
+ * `reply` のテキストも残す。画面は返答の下に固定文言を併記する。`toString` に本文を含めない。
  */
 data class VoiceSnapshot(
     val state: VoiceState = VoiceState.IDLE,
@@ -108,7 +114,10 @@ interface VoiceSessionListener {
      * セッションが終わった(DONE・ERROR・取消のどれか)ときに**セッションごとに 1 回だけ**。ERROR から IDLE へ戻るときは呼ばない。
      * `reason`: DONE は "done"、取消は "cancelled"、ERROR はエラーコードの文字列(例 "no_speech"。`AutoSwitchPolicy.REASON_NO_SPEECH` と一致)。
      * ホストの未知のコードは `host_` + `[a-z0-9_]` だけに整えた文字列(本物のコードと衝突しない。例 "host_weird_code"、整えると空なら "host_unknown")。
-     * 返答音声の失敗で DONE になるときは "reply_audio_failed"。
+     * 返答音声の失敗(`audio: null` に `audio_error` が付いた場合を含む)で DONE になるときは "reply_audio_failed"。
+     *
+     * 録音中(マイクを開いている間)にこのリスナーの [onMicOpened]・[onSnapshot] が例外を投げると、セッションは録音を続けず
+     * `mic_unavailable` で終わる。終了処理中の通知の例外は無視される。
      */
     fun onEnded(autoStarted: Boolean, reason: String)
 }

@@ -213,6 +213,10 @@ class FakeAudio(private val sim: Sim, private val log: MutableList<String>) : Au
     var startCount = 0
     var stopCount = 0
     val stopTimes = mutableListOf<Long>()
+    /**
+     * `stop` が録音状態を false にしてから例外を投げる。これで確かめるのは「stop の例外のあとも、通信の中断・`DELETE`・再生停止が走る」
+     * ところまで。実機の `AudioRecord` の release が例外のときも行われること(finally)は、T8 の `MicAudioSource` のテストで確認する。
+     */
     var throwOnStop = false
     var startError: VoiceErrorCode? = null
     var startThrows: Exception? = null
@@ -304,19 +308,27 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
     val micOpenedAt = mutableListOf<Long>()
     val ended = mutableListOf<Pair<Boolean, String>>()
 
+    /** true を返したスナップショットでは、記録したあとに例外を投げる(リスナーの失敗の再現) */
+    var throwOnSnapshot: ((VoiceSnapshot) -> Boolean)? = null
+    var throwOnMicOpened = false
+    var throwOnEnded = false
+
     override fun onSnapshot(snapshot: VoiceSnapshot) {
         log += "snapshot:${snapshot.state}"
         snaps += snapshot
+        if (throwOnSnapshot?.invoke(snapshot) == true) throw IllegalStateException("snapshot failed: ${snapshot.state}")
     }
 
     override fun onMicOpened() {
         log += "micOpened"
         micOpenedAt += sim.now
+        if (throwOnMicOpened) throw IllegalStateException("tone failed: secret-listener-message")
     }
 
     override fun onEnded(autoStarted: Boolean, reason: String) {
         log += "ended:$reason"
         ended += autoStarted to reason
+        if (throwOnEnded) throw IllegalStateException("ended failed")
     }
 }
 

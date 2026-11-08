@@ -189,15 +189,34 @@ class DaidaiView(context: Context, private val avatars: AvatarAssets = AvatarAss
             drawErrorBubble(c, lay, box, DaidaiText.errorMessage(s.error))
             return
         }
+        // 返答音声の失敗など、返答テキストがあるのにエラーが付いているとき: テキストを残し、下に固定文言を小さく併記する
+        val note = if (s.error != null) DaidaiText.errorMessage(s.error) else null
         if (p.reply.isNotEmpty()) {
             val fit = fitReply(lay, p.reply, box.width)
-            drawLines(c, fit, box.left, box.top + lay.px(4f), FG, regular)
+            val top = box.top + lay.px(4f)
+            drawLines(c, fit, box.left, top, FG, regular)
+            if (note != null) {
+                val textBottom = top + fit.size * DaidaiLayout.LINE_HEIGHT * fit.lines.size
+                drawReplyNote(c, lay, box, textBottom + lay.px(DaidaiLayout.REPLY_NOTE_GAP), note)
+            }
+            return
+        }
+        if (note != null) { // 返答が空でも、失敗は利用者に見せる
+            drawReplyNote(c, lay, box, box.top + lay.px(4f), note)
             return
         }
         if (s.voice == VoiceState.IDLE || s.voice == VoiceState.LISTENING) {
             val size = lay.px(32f)
             text(c, DaidaiText.HINT, box.left, box.top + lay.px(8f) + size, size, MUTED, bold)
         }
+    }
+
+    /** 返答の下に出す小さな失敗理由(1 行。収まらなければ省略)。吹き出しではなく、状態の色(警告色)の文字 */
+    private fun drawReplyNote(c: Canvas, lay: DaidaiLayout, box: Box, top: Float, message: String) {
+        val size = lay.px(DaidaiLayout.REPLY_NOTE_SIZE)
+        regular.textSize = size
+        val line = TextFitter.ellipsize(message, box.width) { regular.measureText(it) }
+        text(c, line, box.left, top + size, size, WARN, regular)
     }
 
     private fun fitReply(lay: DaidaiLayout, str: String, width: Float) =

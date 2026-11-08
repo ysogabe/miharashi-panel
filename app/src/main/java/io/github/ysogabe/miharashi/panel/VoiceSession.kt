@@ -31,6 +31,11 @@ enum class VoicePhase {
  * 各段は例外を握りつぶして次へ進む。**マイクの停止は通信の完了に依存しない。**
  * DONE・ERROR・取消のどれで終わるときも同じ手順で、ホストにはセッションの削除(`DELETE`)を送る(認識テキストを早く手放させる)。
  *
+ * ## 録音中の必須の通知
+ * マイクを開いている間([VoiceSessionListener.onMicOpened]、マイク使用中を含むスナップショットの [VoiceSessionListener.onSnapshot])に
+ * リスナーが例外を投げたら、録音を続けず `mic_unavailable` で終わる(開始音もマイク表示もないまま音声を送らない)。
+ * 終了処理中の通知(ERROR・DONE・取消のあとのスナップショットと `onEnded`)の例外は握りつぶし、後ろの停止を進める。
+ *
  * ## 状態は後退しない
  * `PREPARING < LISTENING < HEARING < WAITING < REPLYING < DONE`。POST の ack(`speech` / `ended`)と SSE(`state` / `reply`)のどちらから
  * 来た情報でも、現在より後ろへの遷移だけを受け入れる。`ended`(ack)・`state=waiting`・`reply`・終端 `error` は録音を止める確定信号で、
@@ -313,8 +318,14 @@ class VoiceSession(
         _phase = VoicePhase.LISTENING
         arm(Timer.MIC_CAP, VoiceLimits.MIC_MAX_MS) { onMicCap() }
         arm(Timer.MIC_SILENT, startToneGuardMs + VoiceLimits.MIC_SILENT_WINDOW_MS) { onMicSilentCheck() }
-        emit()
-        safe { listener.onMicOpened() }
+        emit() // マイク使用中のスナップショットの通知が失敗したら、ここでセッションが終わっている
+        if (!_phase.isMicPhase) return
+        try {
+            listener.onMicOpened()
+        } catch (_: Exception) {
+            // 開始音を鳴らせなかった(利用者に録音の合図が届かない)まま録音を続けない。例外のメッセージは診断に載せない
+            fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: start tone notify failed")
+        }
     }
 
     private fun onMicError(g: Int, code: VoiceErrorCode) {
@@ -462,7 +473,8 @@ class VoiceSession(
         if (!sending) return
         if (!firstAckSeen) {
             firstAckSeen = true
-            if (_phase.isMicPhase) {
+            // SSE の speech が最初の ack より先に届いていれば、すでに HEARING(発話中)で、無発話の期限は要らない
+            if (_phase == VoicePhase.LISTENING) {
                 arm(Timer.NO_SPEECH, limits.noSpeechS * 1000 + VoiceLimits.NO_SPEECH_MARGIN_MS) {
                     fail(VoiceErrorCode.NO_SPEECH, "no speech")
                 }
@@ -584,8 +596,9 @@ class VoiceSession(
         reply = DaidaiText.clean(ev.text, VoiceLimits.REPLY_TEXT_MAX_CHARS, keepNewlines = true)
         noticePose = ev.avatarPose?.takeIf { VoiceLimits.POSE_REGEX.matches(it) }
         val audioInfo = ev.audio
-        if (audioInfo == null) { // S11: テキストだけ表示して DONE
-            finishDone(null, ev.audioError?.let { VoiceFailures.line("tts: $it") })
+        if (audioInfo == null) { // S11: テキストを表示して DONE。`audio_error` があれば(空・未知の文字列も)再生の失敗として固定文言を併記する
+            val raw = ev.audioError
+            if (raw == null) finishDone(null, null) else finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.line("tts: $raw"))
             return
         }
         if (!audioInfo.format.equals("wav", ignoreCase = true) || audioInfo.bytes !in 1..VoiceLimits.REPLY_AUDIO_MAX_BYTES.toLong() ||
@@ -658,7 +671,17 @@ class VoiceSession(
         )
         if (snap == lastSnapshot) return
         lastSnapshot = snap
-        safe { listener.onSnapshot(snap) }
+        if (snap.micActive && _phase.isActive) {
+            // 録音中の必須の通知: 表示(マイク使用中)が更新できないまま録音を続けない。例外のメッセージは診断に載せない
+            try {
+                listener.onSnapshot(snap)
+            } catch (_: Exception) {
+                fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: display notify failed")
+            }
+        } else {
+            // 終了処理中(ERROR・DONE・取消のあと)の通知は、失敗しても後ろの停止を進める
+            safe { listener.onSnapshot(snap) }
+        }
     }
 
     // =========================================================================================

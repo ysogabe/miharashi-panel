@@ -57,6 +57,10 @@ class DaidaiLayout(val width: Float, val height: Float, val hasCard: Boolean) {
         const val REPLY_MAX_LINES = 4
         const val LINE_HEIGHT = 1.3f
 
+        /** 返答の下に併記する失敗理由(返答音声の失敗など)の文字の大きさ(基準値)と、返答との間隔 */
+        const val REPLY_NOTE_SIZE = 18f
+        const val REPLY_NOTE_GAP = 6f
+
         /** 返答の文字の大きさ(基準値、大きい順)。4 行が返答の領域に収まる大きさから縮める */
         val REPLY_SIZES = listOf(28f, 24f, 21f, 18f)
         val CARD_BODY_SIZES = listOf(20f, 18f, 16f)

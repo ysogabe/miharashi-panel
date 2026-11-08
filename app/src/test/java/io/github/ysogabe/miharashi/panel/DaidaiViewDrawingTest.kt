@@ -144,6 +144,72 @@ class DaidaiViewDrawingTest {
         assertTrue(red > 200)
     }
 
+    // ---- 返答音声の失敗: 返答テキストを残し、下に固定文言を併記する
+
+    private val replyText = "今日は晴れでしょう"
+
+    /** 返答の領域のうち、1 行目の文字(大きさ 28、行の高さ 1.3 倍、上の余白 4)の帯と、その下に併記する帯(間隔 6 + 18 の文字) */
+    private fun band(px: IntArray, top: Float, bottom: Float): IntArray {
+        val box = DaidaiLayout(960f, 480f, false).reply
+        val y0 = (box.top + top).toInt()
+        val y1 = (box.top + bottom).toInt()
+        return IntArray((y1 - y0) * (960 - box.left.toInt())) { i ->
+            val w = 960 - box.left.toInt()
+            px[(y0 + i / w) * 960 + box.left.toInt() + i % w]
+        }
+    }
+
+    private fun textBand(px: IntArray) = band(px, 0f, 4f + 28f * 1.3f)
+    private fun noteBand(px: IntArray) = band(px, 4f + 28f * 1.3f + 6f, 4f + 28f * 1.3f + 6f + 26f)
+    private fun isWarn(c: Int) = Color.red(c) > 200 && Color.green(c) in 150..230 && Color.blue(c) < 130
+
+    @Test fun replyAudioFailureKeepsTheReplyTextAndAddsTheFixedMessageBelow() {
+        val ok = draw(DaidaiUiState(reply = replyText))
+        val failed = draw(DaidaiUiState(reply = replyText, error = VoiceErrorCode.REPLY_AUDIO_FAILED, diagnostics = "tts: tts_failed"))
+        // 返答テキストの帯は同じ(テキストは残っている。空でないことも確かめる)
+        assertArrayEquals(textBand(ok), textBand(failed))
+        assertTrue(textBand(failed).any { it != PanelView.BASE_BG })
+        // 併記の帯: 失敗のときだけ警告色の文字が出る
+        assertEquals(0, noteBand(ok).count { it != PanelView.BASE_BG })
+        assertTrue(noteBand(failed).count(::isWarn) > 30)
+        // 文言はコードから引く固定文言: 別のコードなら別の絵、診断の文字列は絵に影響しない
+        val other = draw(DaidaiUiState(reply = replyText, error = VoiceErrorCode.TIMEOUT))
+        assertTrue(diff(noteBand(failed), noteBand(other)) > 30)
+        val sameCode = draw(DaidaiUiState(reply = replyText, error = VoiceErrorCode.REPLY_AUDIO_FAILED, diagnostics = "different"))
+        assertArrayEquals(failed, sameCode)
+        // ERROR 状態の吹き出しとは別の見た目(赤い枠は出ない)
+        val bubble = draw(DaidaiUiState(voice = VoiceState.ERROR, error = VoiceErrorCode.REPLY_AUDIO_FAILED, reply = replyText))
+        assertTrue(diff(failed, bubble) > 200)
+        val red = failed.count { Color.red(it) > 240 && Color.green(it) in 80..100 && Color.blue(it) in 80..100 }
+        assertEquals(0, red)
+    }
+
+    @Test fun errorBubbleIsUnchangedByAReplyText() {
+        // ERROR 状態は従来どおり吹き出しだけ(返答テキストは描かない)
+        val a = draw(DaidaiUiState(voice = VoiceState.ERROR, error = VoiceErrorCode.NO_SPEECH))
+        val b = draw(DaidaiUiState(voice = VoiceState.ERROR, error = VoiceErrorCode.NO_SPEECH, reply = replyText))
+        assertArrayEquals(a, b)
+    }
+
+    @Test fun replyAudioFailureWithoutReplyTextStillShowsTheMessage() {
+        val plain = draw(DaidaiUiState())
+        val failed = draw(DaidaiUiState(error = VoiceErrorCode.REPLY_AUDIO_FAILED))
+        assertTrue(diff(plain, failed) > 100)
+    }
+
+    @Test fun longReplyWithFailureNoteStaysInsideTheReplyArea() {
+        // 通知カードがあって返答の領域が最も狭いときに、4 行の返答 + 併記が領域の下にはみ出さない
+        for (text in listOf("あ".repeat(2000), "a b ".repeat(500), "一\n二\n三\n四\n五\n六")) {
+            val px = draw(DaidaiUiState(reply = text, notice = notice, error = VoiceErrorCode.REPLY_AUDIO_FAILED))
+            val box = DaidaiLayout(960f, 480f, true).reply
+            for (y in box.bottom.toInt() + 1 until 480) for (x in 300 until 960)
+                assertEquals("($x,$y)", PanelView.BASE_BG, px[y * 960 + x])
+            // 併記の文字(警告色)は返答の領域の中に出ている
+            val warn = (box.top.toInt()..box.bottom.toInt()).sumOf { y -> (328 until 960).count { x -> isWarn(px[y * 960 + x]) } }
+            assertTrue(warn > 30)
+        }
+    }
+
     @Test fun notConfiguredGuideHasNoChipAndNoCard() {
         val guide = draw(DaidaiUiState(notice = notice, setup = SetupGuide.NOT_CONFIGURED))
         val plain = draw(DaidaiUiState.forSettings(false))

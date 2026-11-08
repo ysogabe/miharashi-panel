@@ -56,7 +56,10 @@ data class DaidaiUiState(
     val transcript: String = "",
     /** 返答テキスト */
     val reply: String = "",
-    /** `voice == ERROR` のときのコード。null や固定表にない場合は汎用の文言になる */
+    /**
+     * `voice == ERROR` のときのコード。null や固定表にない場合は汎用の文言になる。
+     * `voice != ERROR` で `reply` が空でないときに入っていれば(返答音声の失敗)、返答の下に固定文言を併記する。
+     */
     val error: VoiceErrorCode? = null,
     /** ホストの `message` など診断用の 1 行。画面の本文には出さない */
     val diagnostics: String? = null,

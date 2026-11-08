@@ -546,16 +546,46 @@ class VoiceSessionTest {
     // ---------------------------------------------------------------- S11 / S15 返答音声
 
     @Test
-    fun s11_nullAudioShowsTextOnly() {
+    fun s11_nullAudioWithAudioErrorShowsTextAndReplyAudioFailed() {
+        // `tts_failed` はエラーコード(reply_audio_failed)に変換され、返答テキストも残る。生のコードは診断の 1 行にだけ
         val r = Rig()
         r.startAndListen()
         r.reply("音声なし", audio = null, audioError = "tts_failed")
         assertEquals(VoicePhase.DONE, r.phase)
+        assertEquals(VoiceState.IDLE, r.last.state)
         assertEquals("音声なし", r.last.reply)
-        assertNull(r.last.error)
-        assertNotNull(r.last.diagnostics)
+        assertEquals(VoiceErrorCode.REPLY_AUDIO_FAILED, r.last.error)
+        assertEquals("tts: tts_failed", r.last.diagnostics)
+        assertEquals(DaidaiText.errorMessage(VoiceErrorCode.REPLY_AUDIO_FAILED), DaidaiText.errorMessage(r.last.error))
         assertEquals(0, r.player.plays)
         assertTrue(r.bridge.fetches.isEmpty())
+        assertEquals(listOf(false to "reply_audio_failed"), r.listener.ended)
+    }
+
+    @Test
+    fun nullAudioWithEmptyOrUnknownAudioErrorIsAlsoReplyAudioFailed() {
+        for (raw in listOf("", "   ", "weird_tts_problem", "TTS_FAILED", "\u0007bad\nnews")) {
+            val r = Rig()
+            r.startAndListen()
+            r.reply("テキスト", audio = null, audioError = raw)
+            assertEquals(raw, VoicePhase.DONE, r.phase)
+            assertEquals(raw, VoiceErrorCode.REPLY_AUDIO_FAILED, r.last.error)
+            assertEquals(raw, "テキスト", r.last.reply)
+            val diag = r.last.diagnostics!!
+            assertFalse(raw, diag.contains('\n') || diag.contains('\u0007'))
+            assertEquals(raw, listOf(false to "reply_audio_failed"), r.listener.ended)
+        }
+    }
+
+    @Test
+    fun nullAudioWithoutAudioErrorIsPlainTextReply() {
+        val r = Rig()
+        r.startAndListen()
+        r.reply("テキストだけ", audio = null, audioError = null)
+        assertEquals(VoicePhase.DONE, r.phase)
+        assertEquals("テキストだけ", r.last.reply)
+        assertNull(r.last.error)
+        assertNull(r.last.diagnostics)
         assertEquals(listOf(false to "done"), r.listener.ended)
     }
 
@@ -822,6 +852,38 @@ class VoiceSessionTest {
         assertEquals(VoiceErrorCode.NO_SPEECH, r.last.error)
         assertEquals(listOf(false to "no_speech"), r.listener.ended)
         assertFalse(r.audio.recording)
+    }
+
+    @Test
+    fun speechBeforeFirstAckDoesNotRearmNoSpeechTimer() {
+        // 最初のチャンクは 400 ms に出て、ack は 1.5 秒遅れる。その間に SSE の speech が先に届く
+        val r = Rig()
+        r.bridge.chunkReply = { c -> ok(ChunkAck(AckState.LISTENING, c.seq), latencyMs = if (c.seq == 0) 1_500 else 0) }
+        r.startAndListen()
+        r.talk(420)
+        assertEquals("最初の ack はまだ届いていない", 1, r.bridge.chunks.size)
+        r.speech()
+        assertEquals(VoicePhase.HEARING, r.phase)
+        r.talk(1_500) // 最初の ack が届く(state=listening)
+        // 無発話の期限(no_speech_s 10 + 3 秒)を ack から数えて超えても、発話中のまま
+        r.talk(14_000)
+        assertEquals(VoicePhase.HEARING, r.phase)
+        assertNull(r.last.error)
+        assertTrue(r.audio.recording)
+        assertTrue(r.listener.ended.isEmpty())
+    }
+
+    @Test
+    fun speechAfterFirstAckStillClearsNoSpeechTimer() {
+        // 逆順(ack → speech)
+        val r = Rig()
+        r.startAndListen()
+        r.talk(600) // 最初の ack(listening)が届く
+        r.speech()
+        assertEquals(VoicePhase.HEARING, r.phase)
+        r.talk(14_000)
+        assertEquals(VoicePhase.HEARING, r.phase)
+        assertNull(r.last.error)
     }
 
     @Test
