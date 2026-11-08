@@ -336,14 +336,16 @@ class VoiceBridgeScenarioTest {
 
     @Test fun s7_leavingWhileCreateIsInFlightAbortsItAndNeverRecords() {
         val e = env()
-        e.host.createDelayMs = 600
+        val gate = CountDownLatch(1)
+        e.host.createGate = gate
         e.session.start(StartReason.SWIPE, null, false)
         e.sim.pump()
         e.sim.await("作成の要求がホストに届く") { e.host.requests.isNotEmpty() }
         e.session.cancel()
         e.sim.pumpFor(50)
         assertEquals(VoicePhase.IDLE, e.session.phase)
-        e.sim.pumpFor(900) // 作成の応答が来る時刻を過ぎても
+        gate.countDown() // ホストはいま応答を出せる(中断済みの接続には届かない)
+        e.sim.pumpFor(900) // 応答が出せるようになったあとも
         assertEquals("録音を始めない", 0, e.audio.startCount)
         assertEquals("作成が中断されたので id は分からず、DELETE も出せない(ホスト側の idle_expire で破棄される)", 0, e.host.deletes.size)
         assertEquals(0, e.host.eventRequests.size)
@@ -876,6 +878,9 @@ class VoiceBridgeScenarioTest {
         @Volatile var ackState = "listening"
         @Volatile var ackDelayMs = 0L
         @Volatile var createDelayMs = 0L
+
+        /** 作成の応答を、これが開くまで(最大 30 秒)返さない。実時間の待ちではなく条件で保留する(負荷でテストの進みが遅れても、応答が先に出ない) */
+        @Volatile var createGate: CountDownLatch? = null
         @Volatile var createExtra = ""
         @Volatile var holdEvents = false
         @Volatile var replyWav: ByteArray = WavFixtures.valid(ms = 500, rate = 24_000)
@@ -924,6 +929,7 @@ class VoiceBridgeScenarioTest {
         private fun create(): MockResponse {
             val n = createCount.incrementAndGet()
             if (createDelayMs > 0) Thread.sleep(createDelayMs)
+            createGate?.await(30, TimeUnit.SECONDS)
             createHandler?.let { return it(n) }
             return MockResponse().setResponseCode(201).setHeader("Content-Type", "application/json").setBody(
                 """{"session_id":"s-$n","limits":{"no_speech_s":10,"max_utterance_s":30,"reply_timeout_s":45,"idle_expire_s":15,"retain_s":60}$createExtra}""",

@@ -110,7 +110,7 @@ if [ "$DURL_SET" = 1 ] && [ -n "$DURL" ]; then
         case "$DURL" in */) DURL=${DURL%/} ;; *) break ;; esac
     done
     case "$DURL" in
-        http://?*|https://?*) ;;
+        [Hh][Tt][Tt][Pp]://?*|[Hh][Tt][Tt][Pp][Ss]://?*) ;;
         *) echo "--daidai-url は http://192.168.0.132:8800 の形で入れる" >&2; exit 2 ;;
     esac
     if printf '%s' "$DURL" | LC_ALL=C grep -q '[[:space:][:cntrl:]\\]'; then
@@ -125,6 +125,44 @@ if [ "$DURL_SET" = 1 ] && [ -n "$DURL" ]; then
         *@*) echo "--daidai-url にユーザー情報(@)は付けられない" >&2; exit 2 ;;
         '') echo "--daidai-url にホストが無い" >&2; exit 2 ;;
     esac
+    # Settings.validateDaidaiUrl と同じ規則: ホストは英数字・. _ - か IPv6 の [...]、ポートは未指定か 1〜65535 の数字だけ
+    dport=
+    case "$authority" in
+        \[*)
+            dhost=${authority%%]*}]
+            drest=${authority#*]}
+            case "$drest" in
+                '') ;;
+                :*) dport=${drest#:}; dcolon=1 ;;
+                *) echo "--daidai-url のホストが正しくない" >&2; exit 2 ;;
+            esac
+            if ! printf '%s' "$dhost" | LC_ALL=C grep -Eq '^\[[0-9A-Fa-f:.]+\]$'; then
+                echo "--daidai-url のホスト(IPv6)が正しくない" >&2; exit 2
+            fi
+            ;;
+        *:*)
+            dhost=${authority%:*}
+            dport=${authority##*:}
+            dcolon=1
+            ;;
+        *) dhost=$authority ;;
+    esac
+    case "$authority" in
+        \[*) ;;
+        *) if ! printf '%s' "$dhost" | LC_ALL=C grep -Eq '^[A-Za-z0-9._-]+$'; then
+               echo "--daidai-url のホストに使えるのは英数字と . _ - だけ" >&2; exit 2
+           fi ;;
+    esac
+    if [ "${dcolon:-0}" = 1 ]; then
+        case "$dport" in
+            ''|*[!0-9]*) echo "--daidai-url のポートが正しくない(1〜65535 の数字)" >&2; exit 2 ;;
+        esac
+        [ "${#dport}" -le 5 ] || { echo "--daidai-url のポートが範囲外(1〜65535)" >&2; exit 2; }
+        dport_num=$(printf '%s' "$dport" | sed 's/^0*//')
+        if [ -z "$dport_num" ] || [ "$dport_num" -gt 65535 ]; then
+            echo "--daidai-url のポートが範囲外(1〜65535)" >&2; exit 2
+        fi
+    fi
 fi
 
 # ---- adb の呼び出し(--dry-run では表示するだけ)
@@ -172,18 +210,17 @@ if [ -n "$URL" ] || [ -n "$TOKEN" ] || [ -n "$SLEEP" ] || [ "$DURL_SET" = 1 ] ||
         fi
     fi
 
-    # panel のトークンと同じ値は、だいだいのトークンにできない(今回指定したものか、端末にある既存のもの)
-    if [ -n "$DTOKEN" ] && [ -z "$TOKEN" ] && [ -n "$existing" ]; then
-        current=$(printf '%s\n' "$existing" | sed -n 's/.*<string name="token">\(.*\)<\/string>.*/\1/p' | head -n 1)
-        if [ -n "$current" ] && [ "$current" = "$DTOKEN" ]; then
-            echo "だいだいのトークンは panel のトークン(端末の設定)と別の値にする" >&2; exit 2
+    # panel のトークンとだいだいのトークンは、書き込んだ**後**の値どうしで比べる(今回指定した値と端末の既存の値を合成する)。
+    # どちらのオプションで指定しても、同じ値になるなら何も書かずに終わる(アプリは同値のブリッジトークンを空扱いにして音声が止まるため)
+    if [ -n "$existing" ]; then
+        stored_token=$(printf '%s\n' "$existing" | sed -n 's/.*<string name="token">\(.*\)<\/string>.*/\1/p' | head -n 1)
+        stored_dtoken=$(printf '%s\n' "$existing" | sed -n 's/.*<string name="daidai_token">\(.*\)<\/string>.*/\1/p' | head -n 1)
+        eff_token=${TOKEN:-$stored_token}
+        eff_dtoken=${DTOKEN:-$stored_dtoken}
+        if [ -n "$eff_token" ] && [ "$eff_token" = "$eff_dtoken" ]; then
+            echo "panel のトークンとだいだいのトークンが同じ値になる(端末の設定との組み合わせを含む)。何も書き込まずに終わる。別の値にする" >&2
+            exit 2
         fi
-    fi
-
-    # panel のトークンだけ差し替えて、端末の既存の daidai_token と同じ値になる場合: アプリは安全側で未設定扱いにする(音声が止まる)
-    if [ -n "$TOKEN" ] && [ -z "$DTOKEN" ] && [ -n "$existing" ] &&
-        printf '%s\n' "$existing" | grep -qF "<string name=\"daidai_token\">$TOKEN</string>"; then
-        echo "警告: 新しい panel のトークンが端末の daidai_token と同じ。アプリはだいだい連携を未設定として扱う(--daidai-token-file で別の値にする)" >&2
     fi
 
     # 既存のうち、今回差し替える項目の行と、枠(<?xml ...?> <map> </map>)を落とす

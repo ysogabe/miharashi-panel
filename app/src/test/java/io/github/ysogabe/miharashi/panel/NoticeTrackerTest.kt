@@ -229,4 +229,42 @@ class NoticeTrackerTest {
         }
         assertEquals(0, t.unreadCount)
     }
+
+    @Test fun arrivalsAreNewIdsInTheWindowEvenWhenTheCountStaysTheSame() {
+        val t = NoticeTracker()
+        t.onStatus(info(1, n("e"), n("d"), n("c"), n("b"), n("a")), 0)
+        assertEquals("最初の status は全部が窓に現れた id", listOf("e", "d", "c", "b", "a"), t.lastArrivals)
+        t.markAllSeen()
+        assertEquals(emptyList<String>(), t.unreadIds)
+        // 窓が入れ替わる: 5 件のまま、a が落ちて f が現れる
+        t.onStatus(info(2, n("f"), n("e"), n("d"), n("c"), n("b")), 1_000)
+        assertEquals(listOf("f"), t.lastArrivals)
+        assertEquals(listOf("f", "e", "d", "c", "b"), t.windowIds)
+        assertEquals("既読にした id は未読 id に入らない", listOf("f"), t.unreadIds)
+        assertEquals(1, t.unreadCount)
+        // 同じ窓の再配信は新着なし
+        t.onStatus(info(2, n("f"), n("e"), n("d"), n("c"), n("b")), 2_000)
+        assertEquals(emptyList<String>(), t.lastArrivals)
+    }
+
+    @Test fun staleSnapshotAndNullDaidaiHaveNoArrivals() {
+        val t = NoticeTracker()
+        t.onStatus(info(5, n("a")), 0)
+        t.onStatus(info(6, n("b"), n("a")), 1_000)
+        assertEquals(listOf("b"), t.lastArrivals)
+        t.onStatus(info(4, n("z"), n("a")), 2_000) // 後着の古いスナップショットは捨てる
+        assertEquals(emptyList<String>(), t.lastArrivals)
+        assertEquals(listOf("b", "a"), t.windowIds)
+        t.onStatus(info(7, n("c"), n("b"), n("a")), 3_000)
+        t.onStatus(null, 4_000)
+        assertEquals(emptyList<String>(), t.lastArrivals)
+    }
+
+    @Test fun arrivalsForAckHostFollowIdsNotUnseen() {
+        val t = NoticeTracker()
+        t.onStatus(info(1, n("c"), n("b"), n("a"), unseen = 3, ack = true), 0)
+        t.onStatus(info(2, n("d"), n("c"), n("b"), unseen = 3, ack = true), 1_000) // unseen は同数のまま入れ替わる
+        assertEquals(3, t.unreadCount)
+        assertEquals(listOf("d"), t.lastArrivals)
+    }
 }

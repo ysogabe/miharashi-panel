@@ -64,6 +64,19 @@ class NoticeTracker {
     /** Panel のローカルの未読件数(直近の通知のうち、[markAllSeen] されていないもの) */
     val localUnread: Int get() = notices.count { it.id !in seen }
 
+    /** 現在の窓(ホストが返す最新の通知)の id。新しい順 */
+    val windowIds: List<String> get() = notices.map { it.id }
+
+    /** 現在の窓のうち、Panel がまだ「見た」と数えていない id(新しい順)。ホストが既読を管理する場合の件数は [unseen] で別に決まる */
+    val unreadIds: List<String> get() = notices.map { it.id }.filter { it !in seen }
+
+    /**
+     * 直近に採用した status で、直前の窓に無かった id(新着。新しい順)。件数ではなく id で見るので、
+     * 窓が入れ替わって件数が変わらなくても、ホストの `unseen` が同数のままでも新着と分かる。捨てた(古い)status では変わらない。
+     */
+    var lastArrivals: List<String> = emptyList()
+        private set
+
     /** 今ある通知をすべて既読にする(B を 2 秒以上見たとき)。あとで来た通知は、また未読になる。 */
     fun markAllSeen() {
         for (n in notices.asReversed()) {
@@ -84,11 +97,14 @@ class NoticeTracker {
     }
 
     fun onStatus(daidai: DaidaiInfo?, nowMs: Long): NoticeCandidate? {
+        lastArrivals = emptyList()
         if (daidai == null) return null
         val rev = daidai.rev
         val seenRev = maxRev
         if (rev != null && seenRev != null && rev < seenRev) return null // 後着の古いスナップショット
         if (rev != null) maxRev = rev
+        val previousIds = notices.mapTo(HashSet()) { it.id }
+        lastArrivals = daidai.notices.map { it.id }.filter { it !in previousIds }
         latest = daidai
 
         val firstSnapshot = !baselined

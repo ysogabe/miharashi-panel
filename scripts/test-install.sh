@@ -141,11 +141,20 @@ expect_written_lacks "old-daidai-token"
 expect_count "name=\"daidai_token\"" 1
 expect_calls_lack "$DAIDAI_TOKEN"
 
-# ---- 3b. panel のトークンだけ差し替えて、既存の daidai_token と同じになる場合は警告(書き込みは続ける)
+# ---- 3b. panel のトークンだけ差し替えて、端末の既存の daidai_token と同じになる場合は拒否(逆方向と同じ。何も書かない)
 printf '%s\n' old-daidai-token-0123456789 > "$WORK/same-as-daidai.token"
 run "panel token が既存の daidai_token と同じ" FAKE_PANEL_XML="$WORK/existing.xml" -- --token-file "$WORK/same-as-daidai.token"
+expect_status 2
+expect_not_written
+expect_stderr_has "同じ値"
+# 同時に別のだいだいのトークンも指定するなら、合成後は別の値なので通る
+run "panel token が既存の daidai_token と同じでも、同時に別の値へ替えるなら通る" FAKE_PANEL_XML="$WORK/existing.xml" -- --token-file "$WORK/same-as-daidai.token" --daidai-token-file "$WORK/daidai.token"
 expect_status 0
-expect_stderr_has "daidai_token と同じ"
+expect_written_has "<string name=\"token\">old-daidai-token-0123456789</string>"
+expect_written_has "<string name=\"daidai_token\">$DAIDAI_TOKEN</string>"
+# 端末の設定がない(新規)なら比べる相手がいないので通る
+run "新規で panel token だけ" -- --token-file "$WORK/same-as-daidai.token"
+expect_status 0
 
 # ---- 4. --url と --token-file だけ(panel): daidai_* と sleep_minutes が残る
 run "panel の url/token だけ" FAKE_PANEL_XML="$WORK/existing.xml" -- --url http://192.168.0.132:8790 --token-file "$WORK/panel.token"
@@ -234,6 +243,31 @@ run "空白" -- --daidai-url 'http://192.168.0.132 :8800'
 expect_status 2
 run "ftp" -- --daidai-url ftp://192.168.0.132
 expect_status 2
+
+# ポート(Settings.validateDaidaiUrl と同じ規則): 未指定 OK、1〜65535 の数字だけ OK
+for good in http://bridge.example http://bridge.example:1 http://bridge.example:80 http://bridge.example:65535 https://bridge.example:443/ \
+    'http://[::1]:8800' 'http://[fe80::1]' HTTP://Bridge.Example:8800 http://my_host-1.local:00080; do
+    run "ポートとホストの許可 $good" -- --dry-run --daidai-url "$good"
+    expect_status 0
+done
+for bad in http://bridge.example:0 http://bridge.example:65536 http://bridge.example:70000 http://bridge.example:abc 'http://bridge.example:' \
+    http://bridge.example:-1 http://bridge.example:+80 http://bridge.example:80a http://bridge.example:123456 http://bridge.example:1:2 \
+    'http://[::1]:0' 'http://[::1]:70000' 'http://[::1]:' 'http://[::1]x' 'http://[::1' http://:8800 'http://bridge.example:0000'; do
+    run "ポートの拒否 $bad" -- --dry-run --daidai-url "$bad"
+    expect_status 2
+    expect_no_adb
+done
+# ホストの文字種
+for bad in 'http://bri dge.example' http://bridge!.example http://bridge.example%41 'http://br*dge' 'http://日本語.example' 'http://[zz::1]' 'http://[]'; do
+    run "ホストの文字種 $bad" -- --dry-run --daidai-url "$bad"
+    expect_status 2
+    expect_no_adb
+done
+run "バックスラッシュ" -- --dry-run --daidai-url 'http://bridge.example:8800\x'
+expect_status 2
+run "末尾の / は正規化" -- --dry-run --daidai-url http://bridge.example:8800//
+expect_status 0
+if grep -qF '<string name="daidai_url">http://bridge.example:8800</string>' "$WORK/out"; then ok "末尾の / を落とす"; else ng "正規化されていない: $(cat "$WORK/out")"; fi
 
 # ---- 12. だいだいのトークンの条件
 printf 'short-token\n' > "$WORK/short.token"

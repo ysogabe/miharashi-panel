@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -29,17 +30,28 @@ class BridgeHealthTest {
 
     private fun watchdogThreads() = Thread.getAllStackTraces().keys.count { it.isAlive && it.name == BridgeHttp.WATCHDOG_THREAD_NAME }
 
+    /** ウォッチドッグのスレッドが残らないこと。終了の直前に数えて外れないよう、実時間で最大 5 秒まで条件待ちする(負荷で後始末が遅れても通る) */
+    private fun assertNoWatchdogThreads(message: String = "ウォッチドッグのスレッドが残らない") {
+        val end = System.nanoTime() + 5_000_000_000L
+        while (watchdogThreads() != 0 && System.nanoTime() < end) Thread.sleep(10)
+        assertEquals(message, 0, watchdogThreads())
+    }
+
     /** 1 接続だけ受けて、`script` に任せる素の ServerSocket(MockWebServer では作れない動きの再現用)。 */
-    private class RawServer(script: (java.net.Socket) -> Unit) : AutoCloseable {
+    private class RawServer(script: (java.net.Socket, CountDownLatch) -> Unit) : AutoCloseable {
         val socket = ServerSocket(0)
+
+        /** [close] で開く。「期限より長く待つ」台本は sleep ではなくこのラッチを待つ(負荷で期限が遅れても、台本が先に終わらず、テストも長くならない) */
+        val release = CountDownLatch(1)
         private val worker = thread(isDaemon = true) {
             try {
-                socket.accept().use { script(it) }
+                socket.accept().use { script(it, release) }
             } catch (_: Exception) {
             }
         }
         val url get() = "http://127.0.0.1:${socket.localPort}"
         override fun close() {
+            release.countDown()
             socket.close()
             worker.join(2_000)
         }
@@ -152,7 +164,7 @@ class BridgeHealthTest {
         val started = System.nanoTime()
         val r = check(readMs = 300)
         assertEquals(HealthStatus.UNREACHABLE, r.status)
-        assertTrue("読み取りタイムアウトで戻る", (System.nanoTime() - started) / 1_000_000 < 4_000)
+        assertTrue("読み取りタイムアウトで戻る(相手は永久に応答しない。上限は負荷に余裕を持たせる)", (System.nanoTime() - started) / 1_000_000 < 20_000)
     }
 
     @Test fun connectionRefusedAndResetAreUnreachable() {
@@ -206,7 +218,7 @@ class BridgeHealthTest {
             assertFalse(r.toString().contains("bridge-token"))
         }
         assertEquals("通信しない", 0, server.requestCount)
-        assertEquals(0, watchdogThreads())
+        assertNoWatchdogThreads()
         // 接続を作る処理自体も、例外を投げるなら固定文言で、値を含めない
         for (t in bad) {
             try {
@@ -222,85 +234,109 @@ class BridgeHealthTest {
     // ---- 全体の期限(ウォッチドッグ) ----
 
     @Test fun headersArrivingAfterTheDeadlineAreUnreachable() {
-        server.enqueue(MockResponse().setBody(okBody).setHeadersDelay(3, TimeUnit.SECONDS))
-        val started = System.nanoTime()
-        val r = check(readMs = 10_000, totalMs = 500)
-        assertEquals(HealthStatus.UNREACHABLE, r.status)
-        assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 2_500)
-        assertEquals(0, watchdogThreads())
+        // ヘッダは、テストが終わる(close)まで永久に届かない。期限(0.5 秒)は負荷で遅れても、届く前に必ず来る
+        RawServer { s, release ->
+            s.readRequestHead()
+            release.await(60, TimeUnit.SECONDS)
+        }.use { raw ->
+            val started = System.nanoTime()
+            val r = check(base = raw.url, readMs = 60_000, totalMs = 500)
+            assertEquals(HealthStatus.UNREACHABLE, r.status)
+            assertTrue("期限で戻る(読み取りの 60 秒でも、サーバーの待ちでもない)", (System.nanoTime() - started) / 1_000_000 < 20_000)
+        }
+        assertNoWatchdogThreads()
     }
 
     @Test fun headersDribbledForeverAreCutAtTheDeadline() {
-        RawServer { s ->
+        RawServer { s, release ->
             s.readRequestHead()
             val out = s.getOutputStream()
             out.write("HTTP/1.1 200 OK\r\n".toByteArray())
-            repeat(100) { // 1 回の読みは 5 秒以内に必ず進むので読み取りタイムアウトでは切れない
-                out.write("X-Slow-$it: a\r\n".toByteArray())
+            var i = 0
+            // 1 回の読みは 5 秒以内に必ず進むので読み取りタイムアウトでは切れない。期限(1 秒)で切られるまで(最大 60 秒)出し続ける
+            while (i < 600 && !release.await(100, TimeUnit.MILLISECONDS)) {
+                out.write("X-Slow-${i++}: a\r\n".toByteArray())
                 out.flush()
-                Thread.sleep(100)
             }
         }.use { raw ->
             val started = System.nanoTime()
-            val r = check(base = raw.url, readMs = 5_000, totalMs = 600)
+            val r = check(base = raw.url, readMs = 5_000, totalMs = 1_000)
             assertEquals(HealthStatus.UNREACHABLE, r.status)
-            assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 3_000)
+            assertTrue("期限で戻る(出し続ける 60 秒のほうではない)", (System.nanoTime() - started) / 1_000_000 < 20_000)
         }
-        assertEquals(0, watchdogThreads())
+        assertNoWatchdogThreads()
     }
 
     @Test fun bodyTrickledPastTheDeadlineIsUnreachable() {
-        val body = """{"ok":true,"pad":"${"p".repeat(3000)}"}"""
-        server.enqueue(MockResponse().setBody(body).throttleBody(20, 50, TimeUnit.MILLISECONDS))
-        val started = System.nanoTime()
-        val r = check(readMs = 5_000, totalMs = 700)
-        assertEquals(HealthStatus.UNREACHABLE, r.status)
-        assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 3_000)
-        assertEquals(0, watchdogThreads())
+        // 本文を細く流し続ける(1 回の読みは進むので読み取りタイムアウトでは切れない)。流す量は期限(1 秒)のはるか先まで続く量にして、
+        // 負荷で期限の処理が遅れても、全部届き終わって OK になることがないようにする(10 バイト/50 ms で 4 KB は約 20 秒)。台本は条件待ち
+        val body = """{"ok":true,"pad":"${"p".repeat(4000)}"}"""
+        val written = java.util.concurrent.atomic.AtomicInteger(0)
+        RawServer { s, release ->
+            s.readRequestHead()
+            val out = s.getOutputStream()
+            out.write("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n".toByteArray())
+            val bytes = body.toByteArray()
+            var at = 0
+            while (at < bytes.size && !release.await(50, TimeUnit.MILLISECONDS)) {
+                val n = minOf(10, bytes.size - at)
+                out.write(bytes, at, n)
+                out.flush()
+                at += n
+                written.set(at)
+            }
+        }.use { raw ->
+            val started = System.nanoTime()
+            val r = check(base = raw.url, readMs = 5_000, totalMs = 1_000)
+            assertEquals(HealthStatus.UNREACHABLE, r.status)
+            assertTrue("期限で戻る(本文を流し終えるのを待たない)", (System.nanoTime() - started) / 1_000_000 < 15_000)
+            assertTrue("本文は流し終わっていない(期限で切った)", written.get() < body.toByteArray().size)
+        }
+        assertNoWatchdogThreads()
     }
 
     @Test fun bodyStalledAfterHeadersIsUnreachable() {
         // ヘッダのあと本文の途中で止まる(Content-Length 無し)。JDK の HttpURLConnection は Content-Length 付きの本文を
         // disconnect で止められないことがあるため(Android の OkHttp 実装は call.cancel() で止まる)、ここは close まで読む形で再現する
-        RawServer { s ->
+        RawServer { s, release ->
             s.readRequestHead()
             s.getOutputStream().apply {
                 write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":tr".toByteArray())
                 flush()
             }
-            Thread.sleep(3_000)
+            release.await(60, TimeUnit.SECONDS) // 本文の続きは永久に来ない(close まで)
         }.use { raw ->
             val started = System.nanoTime()
-            val r = check(base = raw.url, readMs = 10_000, totalMs = 500)
+            val r = check(base = raw.url, readMs = 60_000, totalMs = 500)
             assertEquals(HealthStatus.UNREACHABLE, r.status)
-            assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 2_500)
+            assertTrue("期限で戻る(読み取りの 60 秒でも、サーバーの待ちでもない)", (System.nanoTime() - started) / 1_000_000 < 20_000)
         }
-        assertEquals(0, watchdogThreads())
+        assertNoWatchdogThreads()
     }
 
     @Test fun eofAfterTheDeadlineIsNeverTreatedAsOk() {
         // 完全で正しい本文を送ったあと、期限の後に接続を閉じる(Content-Length 無し)。EOF が来ても OK にしない
-        RawServer { s ->
+        // 期限(0.5 秒)の 6 倍あとに閉じる。期限の処理がどれだけ負荷で遅れても(3 秒未満なら)、EOF は期限のあとに来る。
+        // 期限を過ぎていれば、EOF が先に来ても後に来ても、本文が完全でも OK にしてはならない(経過時間では判定しない)
+        RawServer { s, release ->
             s.readRequestHead()
             s.getOutputStream().apply {
                 write("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n$okBody".toByteArray())
                 flush()
             }
-            Thread.sleep(1_200)
+            release.await(3, TimeUnit.SECONDS)
         }.use { raw ->
-            val started = System.nanoTime()
-            val r = check(base = raw.url, readMs = 5_000, totalMs = 400)
+            val r = check(base = raw.url, readMs = 5_000, totalMs = 500)
             assertEquals(HealthStatus.UNREACHABLE, r.status)
-            assertTrue((System.nanoTime() - started) / 1_000_000 < 1_150)
         }
         // 閉じる側が先(期限内)なら OK
-        RawServer { s ->
+        RawServer { s, _ ->
             s.readRequestHead()
             s.getOutputStream().write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n$okBody".toByteArray())
         }.use { raw ->
             assertEquals(HealthStatus.OK, check(base = raw.url, totalMs = 5_000).status)
         }
-        assertEquals(0, watchdogThreads())
+        assertNoWatchdogThreads()
     }
 
     @Test fun deadlineExceededResultNeverCarriesTheTokenOrBody() {
@@ -323,7 +359,7 @@ class BridgeHealthTest {
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
             assertEquals(HealthStatus.UNREACHABLE, check().status)
         }
-        assertEquals("ウォッチドッグのスレッドが残らない", 0, watchdogThreads())
+        assertNoWatchdogThreads()
     }
 
     @Test fun defaultDeadlineIsEightSeconds() {

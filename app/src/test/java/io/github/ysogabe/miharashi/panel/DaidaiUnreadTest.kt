@@ -179,6 +179,89 @@ class DaidaiUnreadTest {
         assertEquals("新しい通知でホストの unseen が増えたら、また出る", 1, h.shown)
     }
 
+    // --- 新着の検出は件数ではなく通知 id の新規出現(窓の入れ替わり) ---
+
+    @Test fun windowRollOverWithSameUnreadCountRestartsTheTwoSeconds() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n5", "n4", "n3", "n2", "n1"))
+        assertEquals(5, h.shown)
+        h.enterB()
+        h.advance(1_900)
+        h.feed(status(2, ack = false, unseen = null, "n6", "n5", "n4", "n3", "n2")) // n1 が窓から落ち、n6 が来る(未読 5 → 5)
+        assertEquals(5, h.shown)
+        h.advance(100) // 元の期限(入場から 2 秒)
+        h.controller.tick(h.now)
+        assertEquals("元の期限では既読にならない(n6 はまだ見せていない)", 5, h.shown)
+        h.advance(1_799) // 新着から 1.899 秒
+        h.controller.tick(h.now)
+        assertEquals(5, h.shown)
+        h.advance(101) // 新着からちょうど 2 秒
+        h.controller.tick(h.now)
+        assertEquals("新着自身の 2 秒表示後に既読", 0, h.shown)
+    }
+
+    @Test fun hostManagedSameUnseenWithRolledWindowRestartsTheTwoSecondsAndAcksTheNewest() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = true, unseen = 5, "n5", "n4", "n3", "n2", "n1"))
+        h.enterB()
+        h.advance(1_900)
+        h.feed(status(2, ack = true, unseen = 5, "n6", "n5", "n4", "n3", "n2")) // unseen は 5 のまま
+        h.advance(100)
+        h.controller.tick(h.now)
+        assertEquals(5, h.shown)
+        assertTrue("元の期限では ack しない", h.acks.isEmpty())
+        h.advance(1_899)
+        h.controller.tick(h.now)
+        assertTrue(h.acks.isEmpty())
+        h.advance(1)
+        h.controller.tick(h.now)
+        assertEquals("新着(n6)の 2 秒後に、最新の id を ack", listOf("n6"), h.acks)
+        assertEquals(0, h.shown)
+    }
+
+    @Test fun unreadAgainAfterReadIsReadAndAckedAgainAfterItsOwnTwoSeconds() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = true, unseen = 3, "n3", "n2", "n1"))
+        h.enterB()
+        h.advance(2_000)
+        h.controller.tick(h.now)
+        assertEquals(listOf("n3"), h.acks)
+        assertEquals(0, h.shown)
+        // 既読後(予約なし)に新着。ホストの unseen は古い値のまま(3)でも新着として数える
+        h.advance(500)
+        h.feed(status(2, ack = true, unseen = 3, "n4", "n3", "n2", "n1", "n0"))
+        assertEquals("再び未読になる", 3, h.shown)
+        h.advance(1_999)
+        h.controller.tick(h.now)
+        assertEquals(listOf("n3"), h.acks)
+        h.advance(1)
+        h.controller.tick(h.now)
+        assertEquals("新着自身の 2 秒後に再度 ack", listOf("n3", "n4"), h.acks)
+        assertEquals(0, h.shown)
+    }
+
+    @Test fun localUnreadAgainAfterReadIsReadAgainAfterItsOwnTwoSeconds() {
+        val h = Harness()
+        h.start()
+        h.feed(status(1, ack = false, unseen = null, "n2", "n1"))
+        h.enterB()
+        h.advance(2_000)
+        h.controller.tick(h.now)
+        assertEquals(0, h.shown)
+        h.advance(700)
+        h.feed(status(2, ack = false, unseen = null, "n3", "n2", "n1"))
+        assertEquals(1, h.shown)
+        h.advance(1_999)
+        h.controller.tick(h.now)
+        assertEquals(1, h.shown)
+        h.advance(1)
+        h.controller.tick(h.now)
+        assertEquals(0, h.shown)
+    }
+
     @Test fun noAckWhenThereIsNothingUnreadOrTheHostDoesNotManageReads() {
         val h = Harness()
         h.start()

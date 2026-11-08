@@ -45,7 +45,7 @@ interface DaidaiEntryListener {
  * - 切替: `SWITCH` なら待機時計を解除してから B へ。操作中(`DEFER`)は [PageListener.onIdle] で一度だけ再評価する。B にいるときはカードの更新だけ。
  * - 未読(R17、設計書 §4.4): 画面 A の手掛かり用の件数を [renderUnread] へ渡す。B に確定して [READ_AFTER_MS] 以上表示されたら
  *   (呼び出し側が [tick] を呼ぶ)、その時点の通知をすべて既読にする(メモリのみ)。それより前に B を離れたら既読にしない。
- *   B の表示中に新しく未読が増えたら、その時点から数え直す(見ていない通知を既読にしない)。
+ *   B の表示中に新着(通知 id の新規出現)が来たら、件数の増減によらず、その時点から数え直す(見ていない通知を既読にしない)。
  *   ホストが既読を管理する(`ack: true`)なら、既読にしたとき最新の通知の id を [sendAck] で伝える(ベストエフォート)。
  * - Intent の extras は受け付けない(ページもマイクも、この型は外部入力から動かせない)。
  * - 通知の本文・トークンを logcat や例外メッセージに出さない。
@@ -141,11 +141,14 @@ class DaidaiController(
         val status = state.status
         if (status === lastStatus) return
         lastStatus = status
-        val unreadBefore = tracker.unreadCount
         val candidate = tracker.onStatus(status?.daidai, nowMs())
         render(buildUi())
-        // B を見ている間に未読が増えた: 見えるようになってから READ_AFTER_MS たったら既読にする
-        if (pages.settledPage == Page.B && tracker.unreadCount > unreadBefore) readDueMs = nowMs() + READ_AFTER_MS
+        // B を見ている間に新着(窓に新しい id が現れた)が未読で来た: その新着が見えてから READ_AFTER_MS たったら既読にする。
+        // 件数の増減では判定しない(窓が入れ替わって未読数が同じでも、ホストの unseen が同数のままでも、新着は新着)。
+        if (tracker.lastArrivals.isNotEmpty() && tracker.unreadCount > 0) {
+            ackedRev = null // 既読を伝えた rev の「0 扱い」は、新着のあとには持ち越さない
+            if (pages.settledPage == Page.B) readDueMs = nowMs() + READ_AFTER_MS
+        }
         publishUnread()
         if (candidate == null) return
         val result = policy.evaluate(candidate, context())

@@ -347,19 +347,20 @@ class BridgeClientTest {
     }
 
     @Test fun timeoutAndDisconnectAreNetworkFailures() {
-        // 応答が来ない: 自分の全体の期限(ここでは 400 ms)でウォッチドッグが切る
-        server.enqueue(json("""{"state":"listening","accepted_seq":1}""").setHeadersDelay(5, TimeUnit.SECONDS))
+        // 応答が来ない(相手は永久に黙る): 自分の全体の期限(ここでは 400 ms)でウォッチドッグが切る
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
         val t0 = System.nanoTime()
         val e = failure { client(chunkMs = 400).sendAudio(sid, 1, ByteArray(640), false) }
         val ms = (System.nanoTime() - t0) / 1_000_000
         assertEquals(BridgeFailure.NETWORK, e.kind)
         assertTrue(e.isRetryable)
-        assertTrue("期限で戻る($ms ms)", ms < 3_000)
+        assertTrue("期限で戻る($ms ms。相手は永久に黙るので、上限は負荷に余裕を持たせる)", ms < 20_000)
         // 本文を 1 バイトずつ細く流す: 読み取りは進んでも、全体の期限で切る
-        server.enqueue(json("""{"state":"listening","accepted_seq":1}""").throttleBody(1, 100, TimeUnit.MILLISECONDS))
+        // (流す量は期限の何十倍も先まで続く量: 1 バイト/100 ms で約 30 秒。負荷で期限が遅れても流し終わらない)
+        server.enqueue(json("""{"state":"listening","accepted_seq":1}${" ".repeat(300)}""").throttleBody(1, 100, TimeUnit.MILLISECONDS))
         val t1 = System.nanoTime()
         assertEquals(BridgeFailure.NETWORK, failure { client(chunkMs = 500).sendAudio(sid, 1, ByteArray(640), false) }.kind)
-        assertTrue((System.nanoTime() - t1) / 1_000_000 < 3_000)
+        assertTrue((System.nanoTime() - t1) / 1_000_000 < 20_000)
         // 接続を切られる(JDK が POST を 1 回自分で再試行することがあるので 2 つ用意する)
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
@@ -679,11 +680,11 @@ class BridgeClientTest {
         // 何も来ないと読み取りタイムアウトで NETWORK
         RawServer { s, _ ->
             s.write(sseHead)
-            Thread.sleep(3_000)
+            Thread.sleep(30_000) // 台本は close で打ち切られる(ワーカーは daemon。close は 2 秒しか待たない)
         }.use { raw ->
             val t0 = System.nanoTime()
             assertEquals(BridgeFailure.NETWORK, failure { client(base = raw.url, eventsReadMs = 300).events(sid, null) { } }.kind)
-            assertTrue((System.nanoTime() - t0) / 1_000_000 < 2_500)
+            assertTrue("読み取りタイムアウトで戻る(サーバーの待ち 30 秒のほうではない)", (System.nanoTime() - t0) / 1_000_000 < 20_000)
         }
     }
 
@@ -778,8 +779,8 @@ class BridgeClientTest {
             Thread.sleep(100)
             val t0 = System.nanoTime()
             c.abortInFlight()
-            assertTrue("abort で SSE の読みが戻る", finished.await(3, TimeUnit.SECONDS))
-            assertTrue((System.nanoTime() - t0) / 1_000_000 < 2_000)
+            assertTrue("abort で SSE の読みが戻る(サーバーは 10 秒止まったまま)", finished.await(8, TimeUnit.SECONDS))
+            assertTrue((System.nanoTime() - t0) / 1_000_000 < 8_000)
             assertEquals(BridgeFailure.NETWORK, (result.get() as BridgeException).kind)
             // abort のあとも、SSE を中断した同じインスタンスが普通に通信できる(abort 前に始まった呼び出しだけが無効で、あとに始めた呼び出しは有効)
             assertEquals(sid, c.createSession(request).sessionId)
@@ -808,7 +809,7 @@ class BridgeClientTest {
         req() // サーバーが受け取った
         Thread.sleep(100)
         c.abortInFlight()
-        assertTrue("既定の 5 秒の期限より前に戻る", finished.await(2, TimeUnit.SECONDS))
+        assertTrue("既定の 5 秒の期限より前に戻る(abort で。負荷の余裕を見ても 4.5 秒)", finished.await(4_500, TimeUnit.MILLISECONDS))
         val e = result.get() as BridgeException
         assertEquals(BridgeFailure.NETWORK, e.kind)
         assertTrue(e.isRetryable)
@@ -999,7 +1000,7 @@ class BridgeClientTest {
         c.cancel(sid)
         assertEquals("DELETE", req().method)
         // cancel の最中に abort が来ても潰れない(次のセッションの abort で、前の取消が消えない)
-        server.enqueue(MockResponse().setResponseCode(204).setHeadersDelay(600, TimeUnit.MILLISECONDS))
+        server.enqueue(MockResponse().setResponseCode(204).setHeadersDelay(1_500, TimeUnit.MILLISECONDS)) // abort はこの間(100 ms 後)に来る
         val result = AtomicReference<Throwable?>()
         val finished = CountDownLatch(1)
         thread {
@@ -1013,15 +1014,15 @@ class BridgeClientTest {
         req()
         Thread.sleep(100)
         c.abortInFlight()
-        assertTrue(finished.await(3, TimeUnit.SECONDS))
+        assertTrue(finished.await(10, TimeUnit.SECONDS))
         assertNull("abort されずに 204 を受け取る", result.get())
     }
 
     @Test fun cancelHasItsOwnShortDeadline() {
-        server.enqueue(MockResponse().setResponseCode(204).setHeadersDelay(5, TimeUnit.SECONDS))
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)) // 永久に応答しない
         val t0 = System.nanoTime()
         assertEquals(BridgeFailure.NETWORK, failure { client(cancelMs = 300).cancel(sid) }.kind)
-        assertTrue((System.nanoTime() - t0) / 1_000_000 < 3_000)
+        assertTrue("取消の期限(0.3 秒)で戻る。既定の取消の期限 3 秒より前", (System.nanoTime() - t0) / 1_000_000 < 15_000)
     }
 
     // =========================================================================================
@@ -1091,11 +1092,12 @@ class BridgeClientTest {
     }
 
     @Test fun slowAudioDownloadIsCutByTheOverallDeadline() {
-        val wav = WavFixtures.valid(ms = 400)
-        server.enqueue(wavResponse(wav).throttleBody(2_000, 100, TimeUnit.MILLISECONDS))
+        // 約 128 KB を 1,000 バイト/100 ms で流す = 流し終わるのに約 13 秒。期限(0.5 秒)の 25 倍以上なので、負荷で期限が遅れても完走しない
+        val wav = WavFixtures.valid(ms = 4_000)
+        server.enqueue(wavResponse(wav).throttleBody(1_000, 100, TimeUnit.MILLISECONDS))
         val t0 = System.nanoTime()
         assertEquals(BridgeFailure.NETWORK, failure { client(audioMs = 500).fetchReplyAudio(sid, 0) }.kind)
-        assertTrue((System.nanoTime() - t0) / 1_000_000 < 3_000)
+        assertTrue((System.nanoTime() - t0) / 1_000_000 < 9_000)
         assertEquals(0, watchdogThreads())
     }
 

@@ -1,5 +1,7 @@
 package io.github.ysogabe.miharashi.panel
 
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -239,5 +241,149 @@ class DaidaiVoiceSessionTest {
         r.sim.advance(30_000)
         assertEquals(0, r.audio.startCount)
         assertEquals(VoiceState.IDLE, r.ui.voice)
+    }
+
+    // ---- AC19: 無発話のあとの自動マイクの抑止(DaidaiController → AutoSwitchPolicy → DaidaiVoice → 本物の VoiceSession)
+
+    /** 通知の自動切替から本物の [VoiceSession] までを、本番と同じ結線でつないだもの(照度は明るい。時刻は [Sim] の仮想時間) */
+    private inner class AutoRig {
+        val log = mutableListOf<String>()
+        val sim = Sim()
+        val bridge = FakeBridge(sim, log)
+        val worker = FakeWorker(sim, bridge).also { bridge.worker = it }
+        val audio = FakeAudio(sim, log)
+        val player = FakePlayer(log)
+        val pages = PageController()
+        val rendered = mutableListOf<DaidaiUiState>()
+        val controller = DaidaiController(pages, { configured }, { }, { }, { sim.now })
+        val starts = mutableListOf<StartReason>()
+        val voice = DaidaiVoice(
+            pages, controller.policy, { configured },
+            VoiceRuntimeFactory { _, listener ->
+                val session = VoiceSession(audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0")
+                object : VoiceRuntime {
+                    override fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) {
+                        starts += reason
+                        session.start(reason, noticeId, autoStarted)
+                    }
+                    override fun retry() = session.retry()
+                    override fun cancel() = session.cancel()
+                    override fun stopMicNow() = session.stopMicNow()
+                    override fun close() {
+                        session.cancel()
+                        session.stopMicNow()
+                    }
+                }
+            },
+            sim, { rendered += it }, StartSound { }, { sim.now },
+        )
+        private var rev = 0L
+
+        init {
+            controller.entryListener = voice
+            controller.start(PanelState(), "ep")
+            controller.onLux(100f)
+            feed("baseline") // 最初の status は基準(切り替えない)
+        }
+
+        private fun fixture() = javaClass.getResource("/fixtures/status-photo.json")!!.readText()
+
+        fun feed(id: String) {
+            val n = JSONObject().put("id", id).put("title", "t-$id").put("body", "b-$id").put("age_s", 3)
+            val d = JSONObject().put("rev", ++rev).put("notices", JSONArray().put(n))
+            val status = KioskStatus.parse(JSONObject(fixture()).put("daidai", d).toString())
+            controller.onKioskState(PanelState().withStatus(status, sim.now))
+        }
+
+        /** 通知を 1 件送る。自動切替のアニメーションが終わり、デバウンスが過ぎるまで進める */
+        fun notify(id: String) {
+            feed(id)
+            sim.settle()
+            pages.animationEnded(sim.now)
+            sim.advance(DaidaiVoice.ENTRY_DEBOUNCE_MS)
+        }
+
+        fun swipeToB() {
+            assertTrue(pages.beginDrag(sim.now))
+            pages.endDrag(Page.B, sim.now)
+            pages.animationEnded(sim.now)
+            sim.advance(DaidaiVoice.ENTRY_DEBOUNCE_MS)
+        }
+
+        fun leave() {
+            assertTrue(pages.beginDrag(sim.now))
+            pages.endDrag(Page.A, sim.now)
+            sim.settle()
+            pages.animationEnded(sim.now)
+            sim.settle()
+        }
+
+        val lastDenial get() = controller.policy.lastResult?.micDenial
+    }
+
+    @Test fun noSpeechAfterAnAutoStartBlocksTheNextAutoMicUntilAManualSessionEndsNormally() {
+        // 契約: 本物の VoiceSession がホストの no_speech を onEnded の reason に載せる文字列が、ポリシーの REASON_NO_SPEECH と一致する
+        assertEquals(AutoSwitchPolicy.REASON_NO_SPEECH, VoiceErrorCode.NO_SPEECH.code)
+
+        val r = AutoRig()
+        // 1. 自動入場(AUTO_NOTICE)でマイクが開く
+        r.notify("n1")
+        assertEquals(listOf(StartReason.NOTIFICATION), r.starts)
+        assertEquals("自動入場でマイクが開く", 1, r.audio.startCount)
+        assertTrue(r.audio.recording)
+        // 2. ホストが no_speech を返し、VoiceSession が無発話で終わる
+        r.bridge.emit(BridgeEvent.Error(r.bridge.nextSeq(), "no_speech", null))
+        r.sim.settle()
+        assertFalse("無発話でマイクは止まる", r.audio.recording)
+        assertEquals(VoiceState.ERROR, r.rendered.last().voice)
+        r.leave()
+
+        // 3. クールダウン(5 分)が過ぎても、次の通知の自動入場ではマイクを開かない
+        r.sim.advance(AutoSwitchPolicy.AUTO_MIC_COOLDOWN_MS + 60_000)
+        r.notify("n2")
+        assertEquals("B には切り替わる", Page.B, r.pages.settledPage)
+        assertEquals("クールダウンではなく無発話の抑止が理由", MicDenial.AFTER_NO_SPEECH, r.lastDenial)
+        r.sim.advance(10_000)
+        assertEquals("マイクは開かない", 1, r.audio.startCount)
+        assertEquals("セッションも作らない", 1, r.bridge.created.size)
+        assertFalse(r.audio.recording)
+        r.leave()
+
+        // 4. 利用者が手動(スワイプ)で入り、no_speech 以外で終えると抑止が解除される
+        r.sim.advance(1_000)
+        r.swipeToB()
+        assertEquals(listOf(StartReason.NOTIFICATION, StartReason.SWIPE), r.starts)
+        assertEquals("手動のセッションではマイクが開く", 2, r.audio.startCount)
+        r.bridge.emit(BridgeEvent.Error(r.bridge.nextSeq(), "asr_failed", null))
+        r.sim.settle()
+        assertFalse(r.audio.recording)
+        r.leave()
+
+        // 5. 次の通知の自動入場では、再びマイクが開く
+        r.sim.advance(AutoSwitchPolicy.AUTO_MIC_COOLDOWN_MS + 60_000)
+        r.notify("n3")
+        assertNull("抑止は解除されている", r.lastDenial)
+        assertEquals(listOf(StartReason.NOTIFICATION, StartReason.SWIPE, StartReason.NOTIFICATION), r.starts)
+        assertEquals(3, r.audio.startCount)
+        assertTrue(r.audio.recording)
+        r.leave()
+    }
+
+    @Test fun aManualSessionEndingWithNoSpeechDoesNotReleaseTheHold() {
+        val r = AutoRig()
+        r.notify("n1")
+        r.bridge.emit(BridgeEvent.Error(r.bridge.nextSeq(), "no_speech", null))
+        r.sim.settle()
+        r.leave()
+        r.sim.advance(AutoSwitchPolicy.AUTO_MIC_COOLDOWN_MS + 60_000)
+        r.swipeToB()
+        assertEquals(2, r.audio.startCount)
+        r.bridge.emit(BridgeEvent.Error(r.bridge.nextSeq(), "no_speech", null)) // 手動でも無発話なら解除しない
+        r.sim.settle()
+        r.leave()
+        r.sim.advance(AutoSwitchPolicy.AUTO_MIC_COOLDOWN_MS + 60_000)
+        r.notify("n2")
+        assertEquals(MicDenial.AFTER_NO_SPEECH, r.lastDenial)
+        assertEquals("マイクは開かない", 2, r.audio.startCount)
     }
 }
