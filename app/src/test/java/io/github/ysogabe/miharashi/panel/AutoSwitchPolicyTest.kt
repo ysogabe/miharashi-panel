@@ -173,6 +173,63 @@ class AutoSwitchPolicyTest {
         assertNull(policy.onSettled(ctx(4_000)))
     }
 
+    @Test fun replacedPendingCandidateDecidesTheOutcomeAtSettle() {
+        // 古い候補(age 25 秒)だけなら、10 秒後の確定では 35 秒で TOO_OLD になる。新しい候補(受信 5 秒、age 0)に置き換わっていれば有効
+        policy.evaluate(cand(0, "old", age = 25), ctx(0, busy = true))
+        policy.evaluate(cand(5_000, "newer", age = 0), ctx(5_000, busy = true))
+        val s = policy.onSettled(ctx(10_000))!!
+        assertEquals(AutoSwitchAction.SWITCH, s.action)
+        assertEquals(AutoSwitchReason.PRESENT, s.reason)
+        assertNull("置き換えられた古い候補は残らない", policy.onSettled(ctx(10_001)))
+
+        // 逆順の確認: 新しい候補のほうが古くなっていれば、置き換え後の候補で TOO_OLD になる(古い候補の有効性に引きずられない)
+        policy.evaluate(cand(0, "fresh", age = 0), ctx(0, busy = true))
+        policy.evaluate(cand(1_000, "stale", age = 29), ctx(1_000, busy = true))
+        val t = policy.onSettled(ctx(5_000))!! // stale: 29 + 4 秒 > 30
+        assertEquals(AutoSwitchAction.SKIP, t.action)
+        assertEquals(AutoSwitchReason.TOO_OLD, t.reason)
+    }
+
+    // --- DEFER → onSettled 経由でもマイクの歯止めは効く(AC19) ---
+
+    /** 候補は `at` に届いて操作中で見送られ、5 秒後に確定する(候補の有効期限 30 秒の内側) */
+    private fun deferThenSettle(at: Long, listen: Boolean = true): AutoSwitchResult {
+        policy.evaluate(cand(at, "d$at"), ctx(at, listen = listen, busy = true))
+        return policy.onSettled(ctx(at + 5_000, listen = listen))!!
+    }
+
+    private fun assertSwitchWithoutMic(r: AutoSwitchResult, denial: MicDenial) {
+        assertEquals(AutoSwitchAction.SWITCH, r.action)
+        assertFalse(r.openMic)
+        assertEquals(denial, r.micDenial)
+    }
+
+    @Test fun micBrakesApplyAfterDeferTheSameAsDirectEvaluation() {
+        // 歯止めなし: 開く
+        val first = deferThenSettle(0)
+        assertEquals(AutoSwitchAction.SWITCH, first.action)
+        assertTrue(first.openMic)
+        // auto_listen オフ
+        assertSwitchWithoutMic(deferThenSettle(2_000, listen = false), MicDenial.AUTO_LISTEN_OFF)
+        // クールダウン(5 分)
+        policy.onAutoMicStarted(10_000)
+        assertSwitchWithoutMic(deferThenSettle(20_000), MicDenial.COOLDOWN)
+        assertTrue("5 分を過ぎれば開く", deferThenSettle(20_000 + 6 * minute).openMic)
+    }
+
+    @Test fun hourlyLimitAppliesAfterDefer() {
+        for (i in 0 until 6) policy.onAutoMicStarted(i * 5 * minute) // 0〜25 分
+        assertSwitchWithoutMic(deferThenSettle(30 * minute), MicDenial.HOURLY_LIMIT)
+        assertTrue("最古が 1 時間前になれば 1 回分空く", deferThenSettle(60 * minute - 5_000).openMic)
+    }
+
+    @Test fun noSpeechHoldAppliesAfterDefer() {
+        policy.onAutoMicStarted(0)
+        policy.onSessionEnded(autoStarted = true, reason = "no_speech")
+        assertSwitchWithoutMic(deferThenSettle(10 * minute), MicDenial.AFTER_NO_SPEECH)
+        assertSwitchWithoutMic(deferThenSettle(100 * minute), MicDenial.AFTER_NO_SPEECH)
+    }
+
     @Test fun settledWhenDisabledMeanwhileSkips() {
         policy.evaluate(cand(0), ctx(0, busy = true))
         val s = policy.onSettled(ctx(1_000, enabled = false))!!

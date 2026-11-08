@@ -22,6 +22,12 @@ interface PageListener {
 
     /** アニメーションなしで A に戻した(背面・前面への復帰)。進行中のアニメーションは捨てる */
     fun onSnap(page: Page) {}
+
+    /**
+     * ドラッグ・アニメーションが終わって落ち着いた。[onSettled] と違い、**同じページへ戻っただけ(スワイプを途中でやめた)のときも呼ばれる**
+     * ([onSettled] が呼ばれるときは、その後に呼ぶ)。操作中に見送った自動切替の再評価に使う
+     */
+    fun onIdle() {}
 }
 
 /**
@@ -129,6 +135,7 @@ class PageController(idleMs: Long = DEFAULT_IDLE_MS) {
         if (settledPage == Page.B) touch(nowMs)
         fireVisibility()
         if (settledPage != from) for (l in listeners.toList()) l.onSettled(settledPage, why)
+        for (l in listeners.toList()) l.onIdle()
     }
 
     /**

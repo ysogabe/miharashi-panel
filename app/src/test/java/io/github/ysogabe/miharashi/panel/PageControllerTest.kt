@@ -9,6 +9,8 @@ class PageControllerTest {
         val visible = mutableListOf<Boolean>()
         val moves = mutableListOf<Pair<Page, PageReason>>()
         val snaps = mutableListOf<Page>()
+        val events = mutableListOf<String>()
+        override fun onIdle() { events += "idle" }
         override fun onSettled(page: Page, reason: PageReason) { settled += page to reason }
         override fun onBVisibleChanged(visible: Boolean) { this.visible += visible }
         override fun onMoveRequested(target: Page, reason: PageReason) { moves += target to reason }
@@ -22,6 +24,29 @@ class PageControllerTest {
         assertTrue(c.beginDrag(now))
         c.endDrag(page, now)
         c.animationEnded(now + 180)
+    }
+
+    @Test fun onIdleFiresAfterEveryAnimationEvenWhenThePageDoesNotChange() {
+        // 操作中に見送った自動切替の再評価(T5)は、スワイプを途中でやめて A に戻ったときにも必要
+        assertTrue(c.beginDrag(0))
+        c.endDrag(Page.A, 50)
+        assertEquals(PageController.Phase.ANIMATING, c.phase)
+        assertTrue("アニメーション中はまだ", r.events.isEmpty())
+        c.animationEnded(230)
+        assertTrue(r.settled.isEmpty())
+        assertEquals(listOf("idle"), r.events)
+        assertFalse("onIdle の時点で操作中ではない", c.userBusy)
+        c.animationEnded(240) // 二重に呼ばれても増えない
+        assertEquals(1, r.events.size)
+        // ページが変わるときは onSettled の後に onIdle
+        val order = mutableListOf<String>()
+        c.addListener(object : PageListener {
+            override fun onSettled(page: Page, reason: PageReason) { order += "settled" }
+            override fun onIdle() { order += "idle" }
+        })
+        swipeTo(Page.B, 300)
+        assertEquals(listOf("settled", "idle"), order)
+        assertEquals(2, r.events.size)
     }
 
     @Test fun startsAtAAndIdle() {

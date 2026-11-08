@@ -27,6 +27,7 @@ class PanelActivity : Activity() {
     private lateinit var pager: PagerLayout
     private val pages = PageController()
     private lateinit var settings: Settings
+    private lateinit var daidai: DaidaiController
     private var sync: KioskSync? = null
     private var lastEndpoint: Pair<String, String>? = null
     private lateinit var connectivity: ConnectivityManager
@@ -97,9 +98,11 @@ class PanelActivity : Activity() {
                 if (page == Page.B) main.postDelayed(pageTick, PAGE_TICK_MS)
             }
         })
+        daidai = DaidaiController(pages, { settings.daidai }, daidaiView::render, view::wake)
         light = LightSensorReader(this) { value ->
             lux = value
             if (active) {
+                daidai.onLux(value)
                 // 通信待ちの間に暗闇でなくなったら、まだ送っていない消灯も取り消す。
                 if (value == null || value > darkness.thresholdLux) cancelAutomaticRequest()
                 darkness.observe(value, SystemClock.elapsedRealtime())
@@ -133,8 +136,8 @@ class PanelActivity : Activity() {
         }
         lastEndpoint = endpoint
         view.configured = settings.configured
-        // B: ブリッジが未設定なら案内を出す(状態の組み立ては T5 で DaidaiController が引き継ぐ)
-        daidaiView.render(DaidaiUiState.forSettings(settings.daidai.isConfigured()))
+        // 通知の基準は、KioskSync を始める前に取り直す(最初の status が基準になる)。B の表示もここで組み直す
+        daidai.start(view.state, endpoint)
         // 設定から戻ったときも、ここから数え直す
         view.sleepTimeoutMs = settings.sleepMinutes * 60_000L
         view.wake()
@@ -143,7 +146,7 @@ class PanelActivity : Activity() {
                 .also { it.start() }
         }
         setBacklight()
-        if (settings.autoBrightness || settings.darkOff) light.start()
+        if (settings.autoBrightness || settings.darkOff || settings.daidai.autoSwitch) light.start()
     }
 
     override fun onPause() {
@@ -152,6 +155,7 @@ class PanelActivity : Activity() {
         main.removeCallbacks(pageTick)
         pages.onPause(SystemClock.elapsedRealtime())
         cancelAutomaticRequest()
+        daidai.stop()
         darkness.stopObserving()
         light.stop()
         lux = null
@@ -208,6 +212,7 @@ class PanelActivity : Activity() {
 
     private fun onKioskState(state: PanelState) {
         view.state = state
+        daidai.onKioskState(state)
         if (automaticRequest != null && !darkness.canTurnOff(state, SystemClock.elapsedRealtime())) {
             cancelAutomaticRequest()
         }
