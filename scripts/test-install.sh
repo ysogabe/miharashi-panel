@@ -124,6 +124,12 @@ expect_written_lacks "old-daidai-token"
 expect_count "name=\"daidai_token\"" 1
 expect_calls_lack "$DAIDAI_TOKEN"
 
+# ---- 3b. panel のトークンだけ差し替えて、既存の daidai_token と同じになる場合は警告(書き込みは続ける)
+printf '%s\n' old-daidai-token-0123456789 > "$WORK/same-as-daidai.token"
+run "panel token が既存の daidai_token と同じ" FAKE_PANEL_XML="$WORK/existing.xml" -- --token-file "$WORK/same-as-daidai.token"
+expect_status 0
+expect_stderr_has "daidai_token と同じ"
+
 # ---- 4. --url と --token-file だけ(panel): daidai_* と sleep_minutes が残る
 run "panel の url/token だけ" FAKE_PANEL_XML="$WORK/existing.xml" -- --url http://192.168.0.132:8790 --token-file "$WORK/panel.token"
 expect_status 0

@@ -144,6 +144,19 @@ class PanelActivityVoiceTest {
         } finally { f.finish() }
     }
 
+    @Test fun enteringStandbyCancelsTheSession() {
+        val f = start(configured = true)
+        try {
+            f.toB()
+            idle(500)
+            val rt = runtimes.single()
+            val before = rt.calls.count { it == "cancel" }
+            f.panel.onSleepChanged(true) // 待機(時計)に入った
+            assertTrue(rt.calls.count { it == "cancel" } > before)
+            assertTrue(rt.calls.contains("stopMic"))
+        } finally { f.finish() }
+    }
+
     @Test fun anIntentCannotOpenTheMicOrChangeThePage() {
         val f = start(configured = true)
         try {

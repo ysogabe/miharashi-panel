@@ -180,6 +180,12 @@ if [ -n "$URL" ] || [ -n "$TOKEN" ] || [ -n "$SLEEP" ] || [ "$DURL_SET" = 1 ] ||
         fi
     fi
 
+    # panel のトークンだけ差し替えて、端末の既存の daidai_token と同じ値になる場合: アプリは安全側で未設定扱いにする(音声が止まる)
+    if [ -n "$TOKEN" ] && [ -z "$DTOKEN" ] && [ -n "$existing" ] &&
+        printf '%s\n' "$existing" | grep -qF "<string name=\"daidai_token\">$TOKEN</string>"; then
+        echo "警告: 新しい panel のトークンが端末の daidai_token と同じ。アプリはだいだい連携を未設定として扱う(--daidai-token-file で別の値にする)" >&2
+    fi
+
     # 既存のうち、今回差し替える項目の行と、枠(<?xml ...?> <map> </map>)を落とす
     body=$(printf '%s\n' "$existing" | sed \
         -e '/^[[:space:]]*<?xml/d' \

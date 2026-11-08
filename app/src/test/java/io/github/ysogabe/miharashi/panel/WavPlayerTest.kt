@@ -112,6 +112,23 @@ class WavPlayerTest {
         assertEquals(1, track.stopsNow.get())
     }
 
+    @Test fun positionIsCheckedBeforeStopBecauseARealTrackReportsZeroAfterStop() {
+        val order = mutableListOf<String>()
+        val track = object : PcmTrack {
+            var stopped = false
+            override fun play() {}
+            override fun write(data: ByteArray, offset: Int, length: Int) = length
+            override val playedFrames: Int get() { order += "pos"; return if (stopped) 0 else Int.MAX_VALUE }
+            override fun stopAfterDrain() { order += "stop"; stopped = true }
+            override fun stopNow() {}
+            override fun release() {}
+        }
+        val p = WavPlayer(audioManager, PcmTrackFactory { _, _ -> track }, sleepMs = { Thread.sleep(1) })
+        assertEquals(true, p.playAndWait(wav))
+        assertTrue("stop の前に位置を見る", order.indexOf("pos") in 0 until order.indexOf("stop"))
+        assertFalse("stop のあとに位置を待たない", order.drop(order.indexOf("stop")).contains("pos"))
+    }
+
     @Test fun stopBeforePlayAndAfterCompletionIsHarmless() {
         val track = FakeTrack()
         val p = player(track)
@@ -149,7 +166,8 @@ class WavPlayerTest {
     @Test fun playbackThatNeverAdvancesStillEndsAfterTheDurationPlusMargin() {
         // 再生位置が進まない機種でも、書き終えていれば再生時間 + 余裕で成功として終わる(スリープは打ち切りのために無待ちにする)
         val track = FakeTrack(totalFramesToReport = 0)
-        val p = WavPlayer(audioManager, PcmTrackFactory { _, _ -> track }, sleepMs = { })
+        var clock = 0L
+        val p = WavPlayer(audioManager, PcmTrackFactory { _, _ -> track }, sleepMs = { }, nowMs = { clock += 20; clock })
         assertEquals(true, p.playAndWait(wav))
         assertEquals(1, track.releases.get())
     }

@@ -86,6 +86,7 @@ class WavPlayer internal constructor(
     private val audioManager: AudioManager,
     private val trackFactory: PcmTrackFactory,
     private val sleepMs: (Long) -> Unit = { Thread.sleep(it) },
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val threadFactory: (Runnable) -> Thread = { r -> Thread(r, "daidai-wav").apply { isDaemon = true } },
 ) : ReplyPlayer {
     constructor(context: Context) : this(
@@ -145,6 +146,7 @@ class WavPlayer internal constructor(
             run.track = track
             if (run.cancelled) { cleanup(run); return }
             track.play()
+            val startedAtMs = nowMs()
             var offset = info.dataOffset
             val end = info.dataOffset + info.dataBytes
             var zeroWrites = 0
@@ -161,15 +163,15 @@ class WavPlayer internal constructor(
                 offset += n
             }
             if (run.cancelled) return
-            track.stopAfterDrain()
-            // 書いたぶんが鳴り終わるまで待つ。位置が進まない機種でも、再生時間 + 余裕で打ち切る(書き終えているので成功)
+            // 書いたぶんが鳴り終わるまで、**再生中のまま**待つ(実機の AudioTrack は stop 後の再生位置を 0 に戻すので、stop より前に見る)。
+            // 位置が進まない機種でも、再生の開始から再生時間 + 余裕で打ち切る(書き終えているので成功)
             val totalFrames = info.dataBytes / 2
-            var waitedMs = 0L
             val limitMs = info.durationMs + DRAIN_MARGIN_MS
-            while (!run.cancelled && track.playedFrames < totalFrames && waitedMs < limitMs) {
+            while (!run.cancelled && track.playedFrames < totalFrames && nowMs() - startedAtMs < limitMs) {
                 sleepMs(POLL_MS)
-                waitedMs += POLL_MS
             }
+            if (run.cancelled) return
+            track.stopAfterDrain()
             success = !run.cancelled
         } catch (_: Exception) {
             success = false
