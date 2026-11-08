@@ -8,6 +8,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -180,7 +181,44 @@ class DaidaiViewDrawingTest {
         assertEquals("<b>bold</b> &amp; <script>x</script>", view.uiState.reply)
     }
 
-    @Test fun sameStateDoesNotInvalidateAgainAndOtherSizesWork() {
+    /** ShadowView で invalidate の有無を見る。`draw` は invalidate フラグを下ろさないので、観測のたびに自分で下ろす */
+    private fun DaidaiView.invalidated(): Boolean = shadowOf(this).wasInvalidated().also { shadowOf(this).clearWasInvalidated() }
+
+    @Test fun sameStateDoesNotInvalidateAgainButAChangeDoes() {
+        val v = newView()
+        v.invalidated() // 初期化で付いた分を下ろす
+        val first = DaidaiUiState(voice = VoiceState.REPLYING, reply = "今日は晴れでしょう", notice = notice, moreNotices = 2)
+        v.render(first)
+        assertTrue(v.invalidated())
+        val before = pixels(v)
+
+        // 別のインスタンスだが値が等しい状態を渡しても、描き直さない
+        val equal = DaidaiUiState(voice = VoiceState.REPLYING, reply = "今日は晴れでしょう", notice = notice.copy(), moreNotices = 2)
+        assertNotSame(first, equal)
+        assertEquals(first, equal)
+        v.render(equal)
+        v.render(equal)
+        assertFalse(v.invalidated())
+        assertArrayEquals(before, pixels(v))
+
+        // 状態が変われば描き直す
+        v.render(equal.copy(reply = "雨でしょう"))
+        assertTrue(v.invalidated())
+        v.render(first)
+        v.invalidated()
+
+        // 照度の補正も、同じ値なら描き直さず、変えれば描き直してピクセルが変わる
+        v.contrastStrength = 0f
+        assertFalse(v.invalidated())
+        v.contrastStrength = 1f
+        assertTrue(v.invalidated())
+        assertTrue(diff(before, pixels(v)) > 1000)
+        v.contrastStrength = 1f
+        assertFalse(v.invalidated())
+    }
+
+    @Test fun otherSizesWork() {
+
         val v = newView(1024, 600)
         v.render(DaidaiUiState(notice = notice, moreNotices = 2))
         pixels(v, 1024, 600)

@@ -18,7 +18,7 @@ object DaidaiText {
     const val HINT = "話しかけてください"
     const val GENERIC_ERROR = "うまくいきませんでした。もう一度お試しください"
 
-    /** 認識結果・返答などの長さの上限(コードポイント)。これ以上は読み捨てる */
+    /** 認識結果・返答などの長さの上限(コードポイント。書記素クラスタの途中では切らない)。これ以上は読み捨てる */
     const val MAX_TRANSCRIPT = 300
     const val MAX_REPLY = 2000
 
@@ -75,23 +75,23 @@ object DaidaiText {
         SetupGuide.NOT_CONFIGURED -> "1. 右へスワイプして操作盤に戻り、左下の「設定」を開く\n" +
             "2. だいだいの接続先 URL とトークンを入れて保存する\n" +
             "3. もう一度この画面へスワイプする"
+        // コマンドは文字列の上では必ず 1 行。画面の幅で折り返されても、コピーして実行できるのは 1 行のまま
         SetupGuide.MIC_PERMISSION -> "パソコンから adb で権限を許可してください:\n" +
-            "adb shell pm grant $PACKAGE_NAME\n" +
-            "android.permission.RECORD_AUDIO"
+            "adb shell pm grant $PACKAGE_NAME android.permission.RECORD_AUDIO"
     }
 
     const val PACKAGE_NAME = "io.github.ysogabe.miharashi.panel"
 
     /**
      * 外部入力のテキストを描画用にそろえる。制御文字・双方向制御文字・ゼロ幅の文字・対になっていないサロゲートを除き、
-     * 前後の空白を落として `max` コードポイントまでにする(通知を読む時点でも同じ処理をするので、描画前の二重の防御)。
+     * 前後の空白を落として `max` コードポイントまでにする(クラスタの途中で切れるなら、その手前まで)(通知を読む時点でも同じ処理をするので、描画前の二重の防御)。
      * 改行は `keepNewlines` なら `\n` 1 つにそろえ、そうでなければ除く。HTML としては解釈しない。
      */
     fun clean(raw: String?, max: Int, keepNewlines: Boolean): String = DaidaiInfo.sanitize(raw, max, keepNewlines)
 }
 
 /**
- * 折り返し・縮小・省略(純 Kotlin)。文字の幅は呼び出し側が渡す `measure` で測る(View では `Paint.measureText`)。
+ * 折り返し・縮小・省略(純 Kotlin。書記素クラスタ単位で、絵文字などを途中で分けない)。文字の幅は呼び出し側が渡す `measure` で測る(View では `Paint.measureText`)。
  * 長い入力でも、`maxLines` 行を超えたところで読むのをやめるので、入力の長さに比例して重くならない。
  */
 object TextFitter {
@@ -124,20 +124,20 @@ object TextFitter {
 
         var i = 0
         while (i < text.length) {
-            val cp = text.codePointAt(i)
-            val n = Character.charCount(cp)
-            i += n
-            if (cp == '\n'.code) {
+            val end = Graphemes.next(text, i)
+            val g = text.substring(i, end)
+            i = end
+            if (g == "\n" || g == "\r\n") {
                 if (!flush()) break
                 continue
             }
-            if (cp == ' '.code && cur.isEmpty()) continue // 折り返し直後の行頭の空白
+            if (g == " " && cur.isEmpty()) continue // 折り返し直後の行頭の空白
             val before = cur.length
-            cur.appendCodePoint(cp)
+            cur.append(g)
             if (before > 0 && measure(cur.toString()) > maxWidth) {
                 cur.setLength(before)
                 var carry = ""
-                if (isWordChar(cp) && isWordChar(cur[before - 1].code)) {
+                if (g.length == 1 && isWordChar(g[0].code) && isWordChar(cur[before - 1].code)) {
                     val sp = cur.lastIndexOf(" ")
                     if (sp >= 0) {
                         carry = cur.substring(sp + 1)
@@ -146,7 +146,7 @@ object TextFitter {
                 }
                 if (!flush()) break
                 cur.append(carry)
-                if (cp != ' '.code || cur.isNotEmpty()) cur.appendCodePoint(cp)
+                if (g != " " || cur.isNotEmpty()) cur.append(g)
             }
         }
         if (!more && cur.isNotEmpty()) {
@@ -178,10 +178,10 @@ object TextFitter {
     /** 1 行に収める。収まらなければ末尾を削って「…」をつける。`forced` なら収まっていても「…」をつける */
     fun ellipsize(line: String, maxWidth: Float, forced: Boolean = false, measure: (String) -> Float): String {
         if (!forced && measure(line) <= maxWidth) return line
-        var s = line.trimEnd()
-        while (s.isNotEmpty() && measure(s + ELLIPSIS) > maxWidth) {
-            s = s.substring(0, s.offsetByCodePoints(s.length, -1))
-        }
-        return s + ELLIPSIS
+        val s = line.trimEnd()
+        val ends = Graphemes.ends(s) // クラスタ(国旗・肌色・ZWJ の絵文字など)の途中では切らない
+        var k = ends.size
+        while (k > 0 && measure(s.substring(0, ends[k - 1]) + ELLIPSIS) > maxWidth) k--
+        return (if (k == 0) "" else s.substring(0, ends[k - 1])) + ELLIPSIS
     }
 }

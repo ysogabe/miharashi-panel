@@ -64,9 +64,15 @@ class DaidaiTextTest {
     @Test fun guidesExplainWhatToDo() {
         assertEquals("ブリッジが未設定です", DaidaiText.guideTitle(SetupGuide.NOT_CONFIGURED))
         assertTrue(DaidaiText.guideBody(SetupGuide.NOT_CONFIGURED).contains("設定"))
-        assertTrue(DaidaiText.guideBody(SetupGuide.MIC_PERMISSION).contains("pm grant"))
-        assertTrue(DaidaiText.guideBody(SetupGuide.MIC_PERMISSION).contains("android.permission.RECORD_AUDIO"))
-        assertTrue(DaidaiText.guideBody(SetupGuide.MIC_PERMISSION).contains(DaidaiText.PACKAGE_NAME))
+        // 権限を許可するコマンドは、そのままコピーして実行できる 1 行として含まれる(途中に改行を入れない)
+        val mic = DaidaiText.guideBody(SetupGuide.MIC_PERMISSION)
+        assertTrue(mic.lines().contains("adb shell pm grant io.github.ysogabe.miharashi.panel android.permission.RECORD_AUDIO"))
+        assertEquals("io.github.ysogabe.miharashi.panel", DaidaiText.PACKAGE_NAME)
+        // 設定は操作盤(A)の左のレールの一番下(PanelLayout.settings)にある
+        val lay = PanelLayout(960f, 480f)
+        assertEquals("設定", lay.settings.label)
+        assertTrue(lay.settings.box.left < lay.rail.right && lay.settings.box.bottom > lay.rail.bottom - 20f)
+        assertTrue(DaidaiText.guideBody(SetupGuide.NOT_CONFIGURED).contains("左下の「設定」"))
         assertEquals("", DaidaiText.guideBody(SetupGuide.NONE))
     }
 
@@ -105,5 +111,37 @@ class DaidaiTextTest {
         assertEquals("ab", DaidaiText.clean("a\nb", 100, keepNewlines = false))
         assertEquals("", DaidaiText.clean(null, 100, keepNewlines = false))
         assertEquals(5, DaidaiText.clean("あ".repeat(50), 5, keepNewlines = false).length)
+    }
+
+    @Test fun cleanLimitNeverCutsInsideAGrapheme() {
+        val flag = "\uD83C\uDDEF\uD83C\uDDF5" // 🇯🇵(2 コードポイント)
+        val thumbs = "\uD83D\uDC4D\uD83C\uDFFD" // 👍🏽(2)
+        val family = "\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67" // 👨‍👩‍👧(5)
+        val dakuten = "\u304B\u3099" // か゛(2)
+        val accent = "e\u0301" // é(2)
+        for (c in listOf(flag, thumbs, family, dakuten, accent)) {
+            val cps = c.codePointCount(0, c.length)
+            val text = c.repeat(10)
+            // 上限がクラスタの途中: 手前の完全なクラスタまで
+            assertEquals(c.repeat(2), DaidaiText.clean(text, cps * 3 - 1, keepNewlines = false))
+            // 上限がちょうど境界
+            assertEquals(c.repeat(3), DaidaiText.clean(text, cps * 3, keepNewlines = false))
+            // 上限が 1 クラスタ未満なら空(断片は出さない)
+            assertEquals("", DaidaiText.clean(text, cps - 1, keepNewlines = false))
+            // 全部入る
+            assertEquals(text, DaidaiText.clean(text, cps * 10, keepNewlines = false))
+        }
+        // 上限の直前までが同じ並びでも、先に結合文字が続くなら、その基底は残さず手前まで
+        assertEquals("ab", DaidaiText.clean("abc\u0301d", 3, keepNewlines = false))
+        // 1 クラスタが上限より長い入力(結合文字の積み重ね)は、断片を出さずに捨てる
+        assertEquals("", DaidaiText.clean("a" + "\u0301".repeat(5000), 10, keepNewlines = false))
+        assertEquals("x", DaidaiText.clean("x" + "\n" + "a" + "\u0301".repeat(5000), 2, keepNewlines = false))
+    }
+
+    @Test fun cleanOfTwoThousandGraphemeCharactersIsFast() {
+        val text = ("\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67" + "\uD83C\uDDEF\uD83C\uDDF5").repeat(1000)
+        val t0 = System.nanoTime()
+        repeat(20) { DaidaiText.clean(text, DaidaiText.MAX_REPLY, keepNewlines = true) }
+        assertTrue("took ${(System.nanoTime() - t0) / 1_000_000}ms", (System.nanoTime() - t0) / 1_000_000 < 2000)
     }
 }

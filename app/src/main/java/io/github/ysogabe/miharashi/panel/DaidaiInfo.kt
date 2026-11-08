@@ -94,33 +94,49 @@ data class DaidaiInfo(
 
         /**
          * 制御文字・双方向制御文字・ゼロ幅の文字・対になっていないサロゲートを除き、前後の空白を落として、`max` 文字(コードポイント)までにする。
-         * 改行(CR・LF・CRLF・NEL・LS・PS)は `keepNewlines` なら `\n` 1 つにし、そうでなければ除く。入力が巨大でも `max` 文字で読むのをやめる。
+         * 上限がクラスタ(国旗・肌色・ZWJ の絵文字・結合文字)の途中に当たるときは、その手前で切る。
+         * 改行(CR・LF・CRLF・NEL・LS・PS)は `keepNewlines` なら `\n` 1 つにし、そうでなければ除く。入力が巨大でも `max` 文字と少しで読むのをやめる。
          */
         internal fun sanitize(raw: String?, max: Int, keepNewlines: Boolean): String {
-            if (raw == null) return ""
+            if (raw == null || max <= 0) return ""
             val sb = StringBuilder()
             var count = 0
+            var cutIndex = -1 // max 文字目の直後の位置(max 文字に届いたとき)
             var i = 0
-            while (i < raw.length && count < max) {
+            // 上限の先も少し読み、上限の位置がクラスタの途中かを調べる
+            while (i < raw.length && count < max + CLUSTER_LOOKAHEAD) {
                 val cp = raw.codePointAt(i)
                 i += Character.charCount(cp)
-                when {
-                    cp == '\r'.code && i < raw.length && raw[i] == '\n' -> continue // CRLF は次の LF で 1 回だけ数える
+                val kept = when {
+                    cp == '\r'.code && i < raw.length && raw[i] == '\n' -> false // CRLF は次の LF で 1 回だけ数える
                     cp == '\r'.code || cp == '\n'.code || cp == 0x85 || cp == 0x2028 || cp == 0x2029 -> {
-                        if (!keepNewlines || sb.isEmpty()) continue
-                        sb.append('\n')
-                        count++
+                        if (!keepNewlines || sb.isEmpty()) false else { sb.append('\n'); true }
                     }
-                    Character.isISOControl(cp) || isInvisibleFormat(cp) || cp in 0xD800..0xDFFF -> continue
-                    sb.isEmpty() && Character.isWhitespace(cp) -> continue
-                    else -> {
-                        sb.appendCodePoint(cp)
-                        count++
-                    }
+                    Character.isISOControl(cp) || isInvisibleFormat(cp) || cp in 0xD800..0xDFFF -> false
+                    sb.isEmpty() && Character.isWhitespace(cp) -> false
+                    else -> { sb.appendCodePoint(cp); true }
                 }
+                if (kept && ++count == max) cutIndex = sb.length
+            }
+            if (cutIndex in 0 until sb.length) {
+                sb.setLength(previousEnd(sb, cutIndex))
             }
             return sb.toString().trimEnd { it.isWhitespace() }
         }
+
+        /** `limit` 以下で最も大きいクラスタの境界(なければ 0) */
+        private fun previousEnd(s: CharSequence, limit: Int): Int {
+            var best = 0
+            var end = 0
+            while (end < limit) {
+                end = Graphemes.next(s, end)
+                if (end <= limit) best = end
+            }
+            return best
+        }
+
+        /** 上限の先を読む文字数。これより長い 1 クラスタ(結合文字を延々と重ねた入力など)は、上限の手前で捨てる */
+        private const val CLUSTER_LOOKAHEAD = 64
 
         /** 双方向制御(U+061C, U+200E/F, U+202A–202E, U+2066–2069)とゼロ幅(U+200B, U+2060, U+FEFF)。 */
         private fun isInvisibleFormat(cp: Int) =

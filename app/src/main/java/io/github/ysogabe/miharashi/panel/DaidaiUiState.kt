@@ -1,8 +1,10 @@
 package io.github.ysogabe.miharashi.panel
 
 /**
- * 音声セッションの状態(設計書 §5.5)。B の表示と、`VoiceSession`(T6)の状態機械が共有する列挙。
- * 状態機械の `PREPARING` / `DONE` は内部の段階で、画面では前者を `IDLE`(または `LISTENING`)、後者を `IDLE` として扱う。
+ * 音声セッションの**表示用**の状態(設計書 §5.5)。B の描画と、`VoiceSession`(T6)が画面へ渡す状態の列挙。
+ * T6 の状態機械は `PREPARING` / `DONE` を含む内部状態を別に持ち、画面へ渡す前にこの列挙へ変換する:
+ * `PREPARING` → `IDLE` または `LISTENING`(マイクを開いて聞き取りを始めていれば `LISTENING`)、`DONE` → `IDLE`。
+ * 内部状態をそのまま持ち込まないこと(この列挙に値を足すと、表示の表・ポーズの対応を全部直すことになる)。
  */
 enum class VoiceState { IDLE, LISTENING, HEARING, WAITING, REPLYING, ERROR }
 
