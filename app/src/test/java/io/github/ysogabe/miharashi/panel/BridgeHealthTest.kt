@@ -10,7 +10,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.net.ServerSocket
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 /** ブリッジの接続テスト(設計書 §5.2.7、AC13 / AC20)。MockWebServer で契約どおりの相手を再現する。 */
 class BridgeHealthTest {
@@ -22,8 +24,31 @@ class BridgeHealthTest {
     @After fun tearDown() { server.shutdown() }
 
     private fun base() = server.url("/").toString()
-    private fun check(base: String = base(), t: String = token, connectMs: Int = 3_000, readMs: Int = 5_000) =
-        BridgeHealth(base, t, connectMs, readMs).check()
+    private fun check(base: String = base(), t: String = token, connectMs: Int = 3_000, readMs: Int = 5_000, totalMs: Long = 8_000) =
+        BridgeHealth(base, t, connectMs, readMs, totalMs).check()
+
+    private fun watchdogThreads() = Thread.getAllStackTraces().keys.count { it.isAlive && it.name == BridgeHttp.WATCHDOG_THREAD_NAME }
+
+    /** 1 接続だけ受けて、`script` に任せる素の ServerSocket(MockWebServer では作れない動きの再現用)。 */
+    private class RawServer(script: (java.net.Socket) -> Unit) : AutoCloseable {
+        val socket = ServerSocket(0)
+        private val worker = thread(isDaemon = true) {
+            try {
+                socket.accept().use { script(it) }
+            } catch (_: Exception) {
+            }
+        }
+        val url get() = "http://127.0.0.1:${socket.localPort}"
+        override fun close() {
+            socket.close()
+            worker.join(2_000)
+        }
+    }
+
+    private fun java.net.Socket.readRequestHead() {
+        val r = getInputStream().bufferedReader(Charsets.ISO_8859_1)
+        while (true) if (r.readLine().isNullOrEmpty()) break
+    }
 
     private val okBody = """{"ok":true,"asr":true,"tts":true,"daidai":true}"""
 
@@ -160,5 +185,148 @@ class BridgeHealthTest {
         assertFalse(ok.toString().contains(token))
         server.enqueue(MockResponse().setResponseCode(401).setBody(token))
         assertFalse(check().message.contains(token))
+    }
+
+    // ---- 不正なトークン(Authorization ヘッダに載せると IllegalArgumentException になる値) ----
+
+    @Test fun invalidTokenCharactersMakeNoRequestAndLeakNothing() {
+        val bad = listOf(
+            "bridge-token-0123\nX-Evil: 1",
+            "bridge-token-0123\r\nX-Evil: 1",
+            "bridge-token-\u0000-0123456789",
+            "bridge-token-\u001f-0123456789",
+            "bridge-token-\u007f-0123456789",
+            "bridge token 0123456789",
+            "bridge-token-\u30c8\u30fc\u30af\u30f3-0123456789",
+        )
+        for (t in bad) {
+            val r = check(t = t)
+            assertEquals(HealthStatus.NOT_CONFIGURED, r.status)
+            assertFalse(r.message.contains("bridge"))
+            assertFalse(r.toString().contains("bridge-token"))
+        }
+        assertEquals("通信しない", 0, server.requestCount)
+        assertEquals(0, watchdogThreads())
+        // 接続を作る処理自体も、例外を投げるなら固定文言で、値を含めない
+        for (t in bad) {
+            try {
+                BridgeHttp.open(base(), "/v1/health", t, 1_000, 1_000)
+                org.junit.Assert.fail("open should refuse")
+            } catch (e: java.io.IOException) {
+                assertEquals("固定文言で値を含まない", "invalid bridge token", e.message)
+                assertTrue(e.cause == null)
+            }
+        }
+    }
+
+    // ---- 全体の期限(ウォッチドッグ) ----
+
+    @Test fun headersArrivingAfterTheDeadlineAreUnreachable() {
+        server.enqueue(MockResponse().setBody(okBody).setHeadersDelay(3, TimeUnit.SECONDS))
+        val started = System.nanoTime()
+        val r = check(readMs = 10_000, totalMs = 500)
+        assertEquals(HealthStatus.UNREACHABLE, r.status)
+        assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 2_500)
+        assertEquals(0, watchdogThreads())
+    }
+
+    @Test fun headersDribbledForeverAreCutAtTheDeadline() {
+        RawServer { s ->
+            s.readRequestHead()
+            val out = s.getOutputStream()
+            out.write("HTTP/1.1 200 OK\r\n".toByteArray())
+            repeat(100) { // 1 回の読みは 5 秒以内に必ず進むので読み取りタイムアウトでは切れない
+                out.write("X-Slow-$it: a\r\n".toByteArray())
+                out.flush()
+                Thread.sleep(100)
+            }
+        }.use { raw ->
+            val started = System.nanoTime()
+            val r = check(base = raw.url, readMs = 5_000, totalMs = 600)
+            assertEquals(HealthStatus.UNREACHABLE, r.status)
+            assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 3_000)
+        }
+        assertEquals(0, watchdogThreads())
+    }
+
+    @Test fun bodyTrickledPastTheDeadlineIsUnreachable() {
+        val body = """{"ok":true,"pad":"${"p".repeat(3000)}"}"""
+        server.enqueue(MockResponse().setBody(body).throttleBody(20, 50, TimeUnit.MILLISECONDS))
+        val started = System.nanoTime()
+        val r = check(readMs = 5_000, totalMs = 700)
+        assertEquals(HealthStatus.UNREACHABLE, r.status)
+        assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 3_000)
+        assertEquals(0, watchdogThreads())
+    }
+
+    @Test fun bodyStalledAfterHeadersIsUnreachable() {
+        // ヘッダのあと本文の途中で止まる(Content-Length 無し)。JDK の HttpURLConnection は Content-Length 付きの本文を
+        // disconnect で止められないことがあるため(Android の OkHttp 実装は call.cancel() で止まる)、ここは close まで読む形で再現する
+        RawServer { s ->
+            s.readRequestHead()
+            s.getOutputStream().apply {
+                write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"ok\":tr".toByteArray())
+                flush()
+            }
+            Thread.sleep(3_000)
+        }.use { raw ->
+            val started = System.nanoTime()
+            val r = check(base = raw.url, readMs = 10_000, totalMs = 500)
+            assertEquals(HealthStatus.UNREACHABLE, r.status)
+            assertTrue("期限で戻る", (System.nanoTime() - started) / 1_000_000 < 2_500)
+        }
+        assertEquals(0, watchdogThreads())
+    }
+
+    @Test fun eofAfterTheDeadlineIsNeverTreatedAsOk() {
+        // 完全で正しい本文を送ったあと、期限の後に接続を閉じる(Content-Length 無し)。EOF が来ても OK にしない
+        RawServer { s ->
+            s.readRequestHead()
+            s.getOutputStream().apply {
+                write("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n$okBody".toByteArray())
+                flush()
+            }
+            Thread.sleep(1_200)
+        }.use { raw ->
+            val started = System.nanoTime()
+            val r = check(base = raw.url, readMs = 5_000, totalMs = 400)
+            assertEquals(HealthStatus.UNREACHABLE, r.status)
+            assertTrue((System.nanoTime() - started) / 1_000_000 < 1_150)
+        }
+        // 閉じる側が先(期限内)なら OK
+        RawServer { s ->
+            s.readRequestHead()
+            s.getOutputStream().write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n$okBody".toByteArray())
+        }.use { raw ->
+            assertEquals(HealthStatus.OK, check(base = raw.url, totalMs = 5_000).status)
+        }
+        assertEquals(0, watchdogThreads())
+    }
+
+    @Test fun deadlineExceededResultNeverCarriesTheTokenOrBody() {
+        server.enqueue(MockResponse().setBody(okBody).setHeadersDelay(2, TimeUnit.SECONDS))
+        val r = check(readMs = 10_000, totalMs = 300)
+        assertFalse(r.toString().contains(token))
+        assertFalse(r.message.contains(token))
+    }
+
+    @Test fun watchdogsDoNotLeakOnNormalOrFailedCalls() {
+        repeat(30) {
+            server.enqueue(MockResponse().setBody(okBody))
+            assertEquals(HealthStatus.OK, check().status)
+        }
+        repeat(5) {
+            server.enqueue(MockResponse().setResponseCode(500))
+            assertEquals(HealthStatus.BAD_RESPONSE, check().status)
+        }
+        repeat(5) {
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            assertEquals(HealthStatus.UNREACHABLE, check().status)
+        }
+        assertEquals("ウォッチドッグのスレッドが残らない", 0, watchdogThreads())
+    }
+
+    @Test fun defaultDeadlineIsEightSeconds() {
+        assertEquals(8_000L, BridgeHttp.TOTAL_TIMEOUT_MS)
     }
 }

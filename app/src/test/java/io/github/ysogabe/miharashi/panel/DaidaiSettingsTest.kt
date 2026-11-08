@@ -275,6 +275,50 @@ class DaidaiSettingsTest {
         assertNull("panel が未設定でも空のトークンは許す", Settings.validateDaidaiToken("", ""))
     }
 
+    /** 内部に改行・制御文字・空白・非 ASCII を含む、16 文字以上のトークン(Authorization ヘッダに載せられない) */
+    private val badBridgeTokens = listOf(
+        "bridge-token-0123\nX-Evil: 1",
+        "bridge-token-0123\r\nX-Evil: 1",
+        "bridge-token-\u00000123456789",
+        "bridge-token-\u001f0123456789",
+        "bridge-token-\u007f0123456789",
+        "bridge-token 0123456789",
+        "bridge-token\t0123456789",
+        "bridge-token-\u30c8\u30fc\u30af\u30f3-0123456789",
+        "bridge-token-\u00e9-0123456789",
+        "bridge-token-\u3000-0123456789",
+    )
+
+    @Test
+    fun tokenWithInnerWhitespaceControlOrNonAsciiIsRejected() {
+        for (t in badBridgeTokens) {
+            val msg = Settings.validateDaidaiToken(t, panelToken)
+            assertNotNull(t.length.toString() + ":" + t.map { it.code }, msg)
+            assertFalse("理由に値を含めない", msg.orEmpty().contains(t))
+        }
+        // 前後の空白は今までどおり trim で落ちる。可視 ASCII の記号は使える
+        assertNull(Settings.validateDaidaiToken("  $bridgeToken\n", panelToken))
+        assertNull(Settings.validateDaidaiToken("!#\$%&'()*+,-./:;<=>?@[]^_`{|}~Aa09", panelToken))
+        // panel のトークンの検証は変えない(既存挙動)
+        assertNull(Settings.validate("http://h:1", "panel token with spaces and \u65e5\u672c\u8a9e"))
+    }
+
+    @Test
+    fun badTokensAreRejectedOnSaveAndNothingIsStored() {
+        val settings = Settings(context)
+        settings.save(base(DaidaiSettings(url = "http://good:1", token = bridgeToken)))
+        val before = settings.load()
+        for (t in badBridgeTokens) assertRejected(before.copy(daidai = before.daidai.copy(token = t)), before)
+    }
+
+    @Test
+    fun storedBadTokensAreTreatedAsUnset() {
+        for (t in badBridgeTokens) {
+            prefs.edit().putString("url", "http://localhost").putString("token", panelToken).putString("daidai_token", t).apply()
+            assertEquals("", Settings(context).daidai.token)
+        }
+    }
+
     @Test
     fun tokenMessagesDoNotEchoTheValue() {
         assertFalse(Settings.validateDaidaiToken(panelToken, panelToken).orEmpty().contains(panelToken))

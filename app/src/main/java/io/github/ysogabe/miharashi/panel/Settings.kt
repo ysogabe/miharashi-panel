@@ -218,16 +218,21 @@ class Settings(context: Context) {
         fun normalizeDaidaiUrl(url: String): String = url.trim().trimEnd('/')
 
         /**
-         * `daidai_token` の確認。空は「未設定」として許す。空でなければ 16 文字以上で、panel のトークンと同じ値は拒否する。
-         * 理由の文言にトークンの値は含めない。問題なければ null、あれば理由。
+         * `daidai_token` の確認。空は「未設定」として許す。空でなければ可視 ASCII(0x21〜0x7E)だけで 16 文字以上、
+         * panel のトークンと同じ値は拒否する(`Authorization` ヘッダにそのまま載るので、内部の空白・改行・制御文字・非 ASCII は
+         * ヘッダ設定の例外や、その例外メッセージ経由の秘密の漏れのもとになる)。理由の文言にトークンの値は含めない。問題なければ null、あれば理由。
          */
         fun validateDaidaiToken(daidaiToken: String, panelToken: String): String? {
             val t = daidaiToken.trim()
             if (t.isEmpty()) return null
+            if (!isBridgeTokenCharset(t)) return "ブリッジのトークンに使えるのは英数字と記号だけ(空白・改行・日本語は不可)"
             if (t.length < MIN_TOKEN_LENGTH) return "ブリッジのトークンは $MIN_TOKEN_LENGTH 文字以上"
             if (t == panelToken.trim()) return "ブリッジのトークンは panel のトークンと別の値にする"
             return null
         }
+
+        /** ブリッジのトークンの文字種。可視 ASCII(0x21〜0x7E)だけ。空文字列は true。 */
+        fun isBridgeTokenCharset(token: String): Boolean = token.all { it in '!'..'~' }
 
         private fun android.content.SharedPreferences.string(key: String): String =
             try { getString(key, "") ?: "" } catch (_: ClassCastException) { "" }
