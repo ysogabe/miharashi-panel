@@ -416,6 +416,10 @@ class VoiceSession(
     private fun onChunkTimeout(token: Int) {
         val c = inFlight ?: return
         if (c.token != token) return
+        if (!sending) {
+            inFlight = null
+            return
+        }
         // 通信を切る(SSE も切れる。その再接続は回数に数えない)。遅れて届く結果はトークンで捨てる
         if (sseRunning) sseFreeReconnect = true
         safe { bridge.abortInFlight() }
@@ -488,6 +492,9 @@ class VoiceSession(
     private fun onHostEnded() {
         if (micOpen) stopMic()
         sending = false
+        // 録音を止めたあとは、送信中のチャンクの結果も期限も要らない(期限が切れて abortInFlight すると、応答待ちの SSE や返答音声の取得まで切る)
+        cancelTimer(Timer.CHUNK)
+        inFlight = null
         queue.clear()
         queuedBytes = 0
         carry = -1
@@ -557,7 +564,7 @@ class VoiceSession(
                 if (replyHandled) return // 返答を受け取ったあとの error では捨てない
                 val code = VoiceFailures.fromHostCode(ev.code)
                 val diag = VoiceFailures.line("host ${ev.code}" + (ev.message?.let { ": $it" } ?: ""))
-                if (code != null) fail(code, diag) else finish(VoicePhase.ERROR, null, diag, VoiceFailures.reasonFromRaw(ev.code))
+                if (code != null) fail(code, diag) else finish(VoicePhase.ERROR, null, diag, "host_" + VoiceFailures.reasonFromRaw(ev.code))
             }
             is BridgeEvent.Done -> {
                 sseDone = true

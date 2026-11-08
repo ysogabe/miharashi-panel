@@ -787,7 +787,8 @@ class VoiceSessionTest {
             assertNull("code='$code'", r.last.error)
             assertEquals(VoiceState.ERROR, r.last.state)
             val reason = r.listener.ended.single().second
-            assertTrue(reason.matches(Regex("[a-z0-9_]{1,32}")))
+            assertTrue(reason, reason.matches(Regex("host_[a-z0-9_]{1,32}")))
+            assertNull(VoiceErrorCode.fromCode(reason))
         }
     }
 
@@ -1129,5 +1130,40 @@ class VoiceSessionTest {
         r.advance(700)
         assertEquals(listOf(700L), r.listener.micOpenedAt)
         assertTrue(r.audio.recording)
+    }
+
+    // ---------------------------------------------------------------- 録音を止めたあとはチャンクの期限を持ち越さない
+
+    @Test
+    fun chunkWatchdogDoesNotOutliveTheMicPhase() {
+        // 最後のチャンクの応答が来ないまま、SSE の waiting と reply が先に届く。4 秒後の期限で通信を切ってはいけない
+        val r = Rig()
+        r.bridge.chunkReply = { hang() }
+        r.bridge.fetchReply = { ok(ByteArray(2000), latencyMs = 5_000) }
+        r.startAndListen()
+        r.talk(440)
+        r.waiting()
+        r.reply()
+        assertEquals(VoicePhase.REPLYING, r.phase)
+        r.advance(4_500) // 最初のチャンクの 4 秒を過ぎる
+        assertEquals("録音を止めたあとにウォッチドッグで切らない", 0, r.bridge.aborts)
+        assertEquals("返答音声の取得を巻き込まない", VoicePhase.REPLYING, r.phase)
+        r.advance(1_000)
+        assertEquals(1, r.player.plays)
+        assertNull(r.last.error)
+        assertEquals(1, r.bridge.eventOpens.size)
+    }
+
+    @Test
+    fun chunkWatchdogDoesNotCutSseWhileWaiting() {
+        val r = Rig()
+        r.bridge.chunkReply = { hang() }
+        r.startAndListen()
+        r.talk(440)
+        r.waiting()
+        r.advance(10_000)
+        assertEquals(0, r.bridge.aborts)
+        assertEquals(1, r.bridge.eventOpens.size)
+        assertEquals(VoicePhase.WAITING, r.phase)
     }
 }

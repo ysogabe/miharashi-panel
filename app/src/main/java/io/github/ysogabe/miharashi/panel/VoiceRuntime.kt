@@ -107,7 +107,8 @@ interface VoiceSessionListener {
     /**
      * セッションが終わった(DONE・ERROR・取消のどれか)ときに**セッションごとに 1 回だけ**。ERROR から IDLE へ戻るときは呼ばない。
      * `reason`: DONE は "done"、取消は "cancelled"、ERROR はエラーコードの文字列(例 "no_speech"。`AutoSwitchPolicy.REASON_NO_SPEECH` と一致)。
-     * ホストの未知のコードは `[a-z0-9_]` だけに整えた文字列("unknown" になることもある)。
+     * ホストの未知のコードは `host_` + `[a-z0-9_]` だけに整えた文字列(本物のコードと衝突しない。例 "host_weird_code"、整えると空なら "host_unknown")。
+     * 返答音声の失敗で DONE になるときは "reply_audio_failed"。
      */
     fun onEnded(autoStarted: Boolean, reason: String)
 }
