@@ -180,4 +180,53 @@ class NoticeTrackerTest {
         assertFalse(c.toString().contains("b-secret"))
         assertFalse(c.toString().contains("t-secret"))
     }
+
+    // --- 未読(R17、AC16) ---
+
+    @Test fun localUnreadCountsNoticesNotYetSeenAndSurvivesRebaseline() {
+        val t = NoticeTracker()
+        assertEquals("daidai を受け取る前は 0", 0, t.unreadCount)
+        t.onStatus(info(1, n("a"), n("b")), 0)
+        assertEquals("ホストが既読を管理しない(ack=false)ので Panel が数える", 2, t.unreadCount)
+        t.markAllSeen()
+        assertEquals(0, t.unreadCount)
+        t.onStatus(info(2, n("c"), n("a"), n("b")), 1_000)
+        assertEquals("新しい通知が来たら、また未読になる", 1, t.unreadCount)
+        t.markAllSeen()
+        t.rebaseline()
+        assertEquals("基準の取り直し(onResume)では既読を捨てない", 0, t.unreadCount)
+        t.onStatus(info(3, n("c"), n("a"), n("b")), 2_000)
+        assertEquals(0, t.unreadCount)
+    }
+
+    @Test fun hostManagedUnseenIsUsedOnlyWhenAckIsTrue() {
+        val t = NoticeTracker()
+        t.onStatus(info(1, n("a"), n("b"), n("c"), unseen = 7, ack = true), 0)
+        assertEquals("ack=true はホストの unseen(5 件を超えてもそのまま)", 7, t.unreadCount)
+        t.markAllSeen() // ホストが管理するときはローカルの既読で件数を変えない(ホストの次の status を待つ)
+        assertEquals(7, t.unreadCount)
+        t.onStatus(info(2, n("a"), n("b"), n("c"), unseen = 0, ack = true), 1_000)
+        assertEquals(0, t.unreadCount)
+
+        val local = NoticeTracker()
+        local.onStatus(info(1, n("a"), unseen = 9, ack = false), 0)
+        assertEquals("ack=false の unseen は採用しない", 1, local.unreadCount)
+    }
+
+    @Test fun ackTrueWithUnreadableUnseenFallsBackToLocalCount() {
+        val t = NoticeTracker()
+        t.onStatus(info(1, n("a"), n("b"), unseen = null, ack = true), 0)
+        assertEquals(2, t.unreadCount)
+        t.markAllSeen()
+        assertEquals(0, t.unreadCount)
+    }
+
+    @Test fun seenSetIsBounded() {
+        val t = NoticeTracker()
+        for (i in 0 until 40) {
+            t.onStatus(info(i.toLong(), n("x$i-a"), n("x$i-b")), i * 10L)
+            t.markAllSeen()
+        }
+        assertEquals(0, t.unreadCount)
+    }
 }

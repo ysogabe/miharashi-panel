@@ -51,7 +51,32 @@ class NoticeTracker {
     /** 既知の通知 id の数(診断・テスト用)。 */
     val knownCount: Int get() = known.size
 
-    /** 基準を取り直す(onResume、接続先の変更)。既知の id と最大の `rev` を捨てる。表示用のデータは残る。 */
+    /** Panel が「見た」と数えた通知 id(R17、設計書 §4.4)。メモリのみ。基準の取り直しでは捨てない(表示用のデータと同じ寿命) */
+    private val seen = LinkedHashSet<String>()
+
+    /**
+     * 未読の件数(画面 A の手掛かり用)。ホストが既読を管理する(`ack`)なら、ホストが数えた `unseen`。
+     * `unseen` が不正で読めないときと、ホストが既読を管理しないときは、Panel が見ていない通知の数。
+     */
+    val unreadCount: Int
+        get() = if (ack) unseen ?: localUnread else localUnread
+
+    /** Panel のローカルの未読件数(直近の通知のうち、[markAllSeen] されていないもの) */
+    val localUnread: Int get() = notices.count { it.id !in seen }
+
+    /** 今ある通知をすべて既読にする(B を 2 秒以上見たとき)。あとで来た通知は、また未読になる。 */
+    fun markAllSeen() {
+        for (n in notices.asReversed()) {
+            if (!seen.add(n.id)) continue
+            while (seen.size > KNOWN_IDS_MAX) {
+                val it = seen.iterator()
+                it.next()
+                it.remove()
+            }
+        }
+    }
+
+    /** 基準を取り直す(onResume、接続先の変更)。既知の id と最大の `rev` を捨てる。表示用のデータと既読は残る。 */
     fun rebaseline() {
         known.clear()
         maxRev = null

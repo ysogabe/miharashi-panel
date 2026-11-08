@@ -62,6 +62,16 @@ class KioskClient(
     /** `POST /api/v1/screen`。その画面へ移る(メニューも閉じる)。`id` はキオスクの `screens` のもの */
     fun screen(id: String) = post("/api/v1/screen", "id", id)
 
+    /**
+     * `POST /api/v1/daidai/ack`(R17)。通知を既読にしたとホストへ伝える。`id` は最新の通知の id。204 で戻る。
+     * panel のトークンで送る(Miharashi 本体の API。ブリッジのトークンは使わない)。ベストエフォートなので、呼び出し側は失敗を捨てる。
+     * @throws IllegalArgumentException `id` が通知 id の形(`^[A-Za-z0-9_.:-]{1,64}$`)でないとき(送らない。メッセージに値は含めない)
+     */
+    fun ackDaidai(id: String) {
+        require(DaidaiInfo.ID.matches(id)) { "通知 id の形が違う" }
+        post("/api/v1/daidai/ack", "id", id)
+    }
+
     /** `{"<field>": "<value>"}` を送り、204 を待つ。画面の id はキオスクから受け取った値なので、JSON として組み立てる。 */
     private fun post(path: String, field: String, value: String) {
         val c = open(path)

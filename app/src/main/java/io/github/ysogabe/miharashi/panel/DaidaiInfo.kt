@@ -44,7 +44,8 @@ data class DaidaiInfo(
         const val MAX_BODY = 200
         const val MAX_POSE = 32
 
-        private val ID = Regex("^[A-Za-z0-9_.:-]{1,64}$")
+        /** 通知 id の形(外部から受け取る値、また ack に送る値の検証に使う) */
+        internal val ID = Regex("^[A-Za-z0-9_.:-]{1,64}$")
         private val POSE = Regex("^[A-Za-z0-9_-]{1,$MAX_POSE}$")
 
         /**

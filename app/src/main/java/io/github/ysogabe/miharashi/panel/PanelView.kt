@@ -70,6 +70,18 @@ class PanelView(
             if (!sleeping) invalidate()
         }
 
+    /**
+     * だいだいの未読件数(R17)。0 なら何も描かない。待機時計のあいだは描かない(時計の描画だけ)。
+     * 負の値は 0 として扱う
+     */
+    var daidaiUnread = 0
+        set(value) {
+            val next = value.coerceAtLeast(0)
+            if (field == next) return
+            field = next
+            if (!sleeping) invalidate()
+        }
+
     /** 待機時計に入った・操作盤に戻ったときに呼ぶ(Activity がバックライトを絞る・戻す) */
     var onSleepChanged: (Boolean) -> Unit = {}
 
@@ -275,6 +287,7 @@ class PanelView(
         dot(c, h.left + dp(610f), h.centerY, if (wifi) OK else NG)
         label(c, "WIFI", h.left + dp(624f), baseY, 18f, FG, bold)
         label(c, ClockMath.format(ClockMath.minuteOfDay(epochMs(), tzOffsetMs())), h.right - dp(20f), baseY, 26f, FG, bold, Paint.Align.RIGHT)
+        if (daidaiUnread > 0) drawDaidaiChip(c)
 
         // 左のレール: キオスクのモニターの状態と 消灯 / 点灯 / 自動、いちばん下に設定。
         // 現在の画面は中央に大きく出すので、画面一覧は置かない(直接遷移ができるまで)
@@ -309,6 +322,18 @@ class PanelView(
 
         layout.mainKeys.forEach { drawButton(c, it, now) }
         layout.sideKeys.forEach { drawButton(c, it, now) }
+    }
+
+    /** ヘッダーの小さな未読チップ「だいだい N」(N は 9 を超えたら 9+)。色は照度によるコントラストに従う */
+    private fun drawDaidaiChip(c: Canvas) {
+        val b = layout.daidaiChip
+        roundRect(c, b, contrastColor(ACCENT_DIM, Color.BLACK), radius = 14f)
+        val shown = if (daidaiUnread > 9) "9+" else daidaiUnread.toString()
+        bold.textSize = dp(15f)
+        val textW = bold.measureText("だいだい $shown")
+        // 文字が箱より広い端末のフォントでも、箱の中に収める
+        val size = if (textW > b.width - dp(16f)) 15f * (b.width - dp(16f)) / textW else 15f
+        label(c, "だいだい $shown", b.centerX, b.centerY + dp(size * 0.35f), size, contrastColor(ACCENT, Color.WHITE), bold, Paint.Align.CENTER)
     }
 
     /**

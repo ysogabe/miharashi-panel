@@ -118,6 +118,48 @@ class KioskClientTest {
     }
 
     @Test
+    fun ackDaidaiPostsLatestIdWithPanelTokenAndAccepts204() {
+        server.enqueue(MockResponse().setResponseCode(204))
+        client.ackDaidai("n-20261108-0731")
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertEquals("/api/v1/daidai/ack", req.path)
+        assertEquals("""{"id":"n-20261108-0731"}""", req.body.readUtf8())
+        assertEquals("Bearer $TOKEN", req.getHeader("Authorization"))
+        assertEquals("application/json", req.getHeader("Content-Type"))
+    }
+
+    @Test
+    fun ackDaidaiTreatsNon204AsFailureAndRejectsBadIdsWithoutSending() {
+        server.enqueue(MockResponse().setResponseCode(200))
+        try {
+            client.ackDaidai("n1")
+            fail("204 以外は失敗")
+        } catch (e: KioskHttpException) {
+            assertEquals(200, e.code)
+        }
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"unknown"}"""))
+        try {
+            client.ackDaidai("n1")
+            fail("404 は失敗")
+        } catch (e: KioskHttpException) {
+            assertEquals(404, e.code)
+        }
+        val before = server.requestCount
+        for (bad in listOf("", "a b", "x\"y", "日本語", "a".repeat(65), "a/b", "a\nb")) {
+            try {
+                client.ackDaidai(bad)
+                fail("不正な id: $bad")
+            } catch (e: IllegalArgumentException) {
+                assertTrue("メッセージに値を含めない", !e.message.orEmpty().contains(bad) || bad.isEmpty())
+            }
+        }
+        assertEquals("不正な id は送らない", before, server.requestCount)
+        server.enqueue(MockResponse().setResponseCode(204))
+        client.ackDaidai("a".repeat(64)) // 64 文字ちょうどは通る
+    }
+
+    @Test
     fun unreachableKioskFailsFast() {
         server.shutdown()
         val c = KioskClient(server.url("/").toString(), TOKEN, connectTimeoutMs = 500, readTimeoutMs = 500)

@@ -43,6 +43,10 @@ interface DaidaiEntryListener {
  *   接続先(panel の URL・トークン)が変わったときは、通知の表示データも捨てる。
  * - 照度: [onLux] へ流す(購読はひとつ。`LightSensorReader` のコールバックに相乗り)。[stop] で照度を捨て、次の値が来るまで UNKNOWN。
  * - 切替: `SWITCH` なら待機時計を解除してから B へ。操作中(`DEFER`)は [PageListener.onIdle] で一度だけ再評価する。B にいるときはカードの更新だけ。
+ * - 未読(R17、設計書 §4.4): 画面 A の手掛かり用の件数を [renderUnread] へ渡す。B に確定して [READ_AFTER_MS] 以上表示されたら
+ *   (呼び出し側が [tick] を呼ぶ)、その時点の通知をすべて既読にする(メモリのみ)。それより前に B を離れたら既読にしない。
+ *   B の表示中に新しく未読が増えたら、その時点から数え直す(見ていない通知を既読にしない)。
+ *   ホストが既読を管理する(`ack: true`)なら、既読にしたとき最新の通知の id を [sendAck] で伝える(ベストエフォート)。
  * - Intent の extras は受け付けない(ページもマイクも、この型は外部入力から動かせない)。
  * - 通知の本文・トークンを logcat や例外メッセージに出さない。
  */
@@ -53,6 +57,10 @@ class DaidaiController(
     /** 待機時計が出ていれば解除する(`PanelView.wake`) */
     private val wakeClock: () -> Unit,
     private val nowMs: () -> Long = { SystemClock.elapsedRealtime() },
+    /** 画面 A に出す未読件数(0 なら何も出さない)。件数が変わったときにメインスレッドで呼ぶ */
+    private val renderUnread: (Int) -> Unit = {},
+    /** ホストへ既読を伝える(最新の通知の id)。ブロッキングの通信を UI スレッドで行わないこと(`KioskSync.ackDaidai`)。失敗は呼び出し側が捨てる */
+    private val sendAck: (String) -> Unit = {},
 ) : PageListener {
     private var tracker = NoticeTracker()
     private var lux: Float? = null
@@ -68,6 +76,10 @@ class DaidaiController(
 
     /** 自動切替で B へ向かっているときの、入場に渡す情報 */
     private var autoEntry: AutoEntry? = null
+
+    /** B を既読にする時刻(B に落ち着いている間だけ持つ)。未読が増えたら数え直す */
+    private var readDueMs: Long? = null
+    private var shownUnread = -1
 
     private class AutoEntry(val noticeId: String, val openMic: Boolean, val micDenial: MicDenial?)
 
@@ -97,7 +109,12 @@ class DaidaiController(
         policy.cancelPending()
         deferredId = null
         autoEntry = null
+        // 背面から戻るときは常に A(PageController.onResume)。B の既読の予約は持ち越さない
+        readDueMs = null
+        ackedRev = null
+        shownUnread = -1
         render(buildUi())
+        publishUnread()
     }
 
     /** 背面に回った。照度を捨て(次の値までは UNKNOWN)、再評価待ちも捨てる。 */
@@ -108,6 +125,7 @@ class DaidaiController(
         policy.cancelPending()
         deferredId = null
         autoEntry = null
+        readDueMs = null
     }
 
     /** 照度の値(`LightSensorReader` のコールバック)。不明・不正値は null。 */
@@ -123,8 +141,12 @@ class DaidaiController(
         val status = state.status
         if (status === lastStatus) return
         lastStatus = status
+        val unreadBefore = tracker.unreadCount
         val candidate = tracker.onStatus(status?.daidai, nowMs())
         render(buildUi())
+        // B を見ている間に未読が増えた: 見えるようになってから READ_AFTER_MS たったら既読にする
+        if (pages.settledPage == Page.B && tracker.unreadCount > unreadBefore) readDueMs = nowMs() + READ_AFTER_MS
+        publishUnread()
         if (candidate == null) return
         val result = policy.evaluate(candidate, context())
         deferredId = if (result.action == AutoSwitchAction.DEFER) candidate.notice.id else null
@@ -141,8 +163,46 @@ class DaidaiController(
         act(result, id)
     }
 
+    /**
+     * 時間を進める(B に落ち着いている間、呼び出し側が定期的に呼ぶ)。B が確定して [READ_AFTER_MS] 以上たっていれば、
+     * その時点の通知をすべて既読にする。A にいる間・B を離れたあとは何もしない。
+     */
+    fun tick(nowMs: Long) {
+        if (!started) return
+        val due = readDueMs ?: return
+        if (pages.settledPage != Page.B) { readDueMs = null; return }
+        if (nowMs < due) return
+        readDueMs = null
+        val hadUnread = tracker.unreadCount > 0
+        val ackHost = tracker.ack
+        tracker.markAllSeen()
+        if (hadUnread && ackHost) {
+            ackedRev = tracker.rev
+            tracker.latestNotice?.id?.let(sendAck)
+        }
+        publishUnread()
+    }
+
+    /** ack 対応のホストへ既読を伝えた時点の `rev`。この `rev` の間はホストの `unseen` の更新を待たずに 0 として扱う */
+    private var ackedRev: Long? = null
+
+    private fun unread(): Int {
+        val rev = tracker.rev
+        if (tracker.ack && rev != null && rev == ackedRev) return 0
+        return tracker.unreadCount
+    }
+
+    private fun publishUnread() {
+        val n = unread()
+        if (n == shownUnread) return
+        shownUnread = n
+        renderUnread(n)
+    }
+
     override fun onSettled(page: Page, reason: PageReason) {
+        if (page == Page.B) readDueMs = nowMs() + READ_AFTER_MS
         if (page == Page.A) {
+            readDueMs = null
             autoEntry = null
             entryListener?.onLeft()
             return
@@ -186,6 +246,11 @@ class DaidaiController(
             onDaidaiPage = pages.settledPage == Page.B,
             userBusy = pages.userBusy,
         )
+    }
+
+    companion object {
+        /** B に確定してから既読にするまでの時間(R17、設計書 §4.4) */
+        const val READ_AFTER_MS = 2_000L
     }
 
     /** B の表示データ。最新の通知 1 件と「他 N 件」、通知のポーズ、未設定の案内。音声の状態は T6 以降が足す */

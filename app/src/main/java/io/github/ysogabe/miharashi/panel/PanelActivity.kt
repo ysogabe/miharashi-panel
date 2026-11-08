@@ -44,7 +44,9 @@ class PanelActivity : Activity() {
     /** B に落ち着いている間だけ、1 秒ごとに無操作を確かめる(A へ戻す)。 */
     private val pageTick = object : Runnable {
         override fun run() {
-            pages.tick(SystemClock.elapsedRealtime())
+            val now = SystemClock.elapsedRealtime()
+            pages.tick(now)
+            daidai.tick(now) // B を READ_AFTER_MS 以上見たら既読にする(R17)
             if (pages.settledPage == Page.B) main.postDelayed(this, PAGE_TICK_MS)
         }
     }
@@ -108,7 +110,12 @@ class PanelActivity : Activity() {
             }
         })
         // B の表示は DaidaiController(通知カード・未設定の案内)→ DaidaiVoice(音声の状態を重ねる)→ DaidaiView の順
-        daidai = DaidaiController(pages, { settings.daidai }, { voice.onBaseUi(it) }, view::wake)
+        daidai = DaidaiController(
+            pages, { settings.daidai }, { voice.onBaseUi(it) }, view::wake,
+            renderUnread = { view.daidaiUnread = it },
+            // 既読の伝達は panel のトークンで本体へ(KioskSync の送信用スレッド。ブリッジのトークンは使わない)
+            sendAck = { id -> sync?.ackDaidai(id) },
+        )
         voice = DaidaiVoice(
             pages, daidai.policy, { settings.daidai },
             testVoiceRuntimeFactory ?: VoiceRuntimeFactory { s, l -> AndroidVoiceRuntime(applicationContext, s, l) },
