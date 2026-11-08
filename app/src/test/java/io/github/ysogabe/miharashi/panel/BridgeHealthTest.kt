@@ -326,8 +326,10 @@ class BridgeHealthTest {
             }
             release.await(3, TimeUnit.SECONDS)
         }.use { raw ->
+            val started = System.nanoTime()
             val r = check(base = raw.url, readMs = 5_000, totalMs = 500)
             assertEquals(HealthStatus.UNREACHABLE, r.status)
+            assertTrue("期限で戻る(EOF を待たない。サーバーは 3 秒保持。負荷の余裕 2 秒)", (System.nanoTime() - started) / 1_000_000 < 2_500)
         }
         // 閉じる側が先(期限内)なら OK
         RawServer { s, _ ->

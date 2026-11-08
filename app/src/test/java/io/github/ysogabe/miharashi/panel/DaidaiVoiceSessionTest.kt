@@ -2,7 +2,9 @@ package io.github.ysogabe.miharashi.panel
 
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.*
+import org.junit.Before
 import org.junit.Test
 
 /**
@@ -11,6 +13,10 @@ import org.junit.Test
  */
 class DaidaiVoiceSessionTest {
     private val configured = DaidaiSettings(url = "http://192.168.0.132:8800", token = "bridge-token-0123456789")
+
+    // 自動切替の判定は AutoSwitchDiagnostics(プロセス全体の状態)に残る。ほかのテストへ持ち出さない
+    @Before fun clearDiagnostics() = AutoSwitchDiagnostics.clear()
+    @After fun clearDiagnosticsAfter() = AutoSwitchDiagnostics.clear()
 
     /** 本番の [AndroidVoiceRuntime] と同じ取消の順序(取消 → マイクを開く許可の取り消し + 停止)。スレッドの終了は [LateCreateAfterCloseTest] */
     private class Runtime(val session: VoiceSession, val audio: FakeAudio) : VoiceRuntime {
