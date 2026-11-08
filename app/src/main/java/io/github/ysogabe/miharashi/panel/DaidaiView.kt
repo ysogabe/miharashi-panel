@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 
 /**
  * 画面 B(だいだい連携画面)の描画(設計書 §5.6)。View と Canvas だけで描く。
@@ -282,9 +283,40 @@ class DaidaiView(context: Context, private val avatars: AvatarAssets = AvatarAss
         if (radius > 0f) c.drawRoundRect(rect, radius, radius, fill) else c.drawRect(rect, fill)
     }
 
-    /** 触れた指は自分が受ける(ページの横ドラッグは `PagerLayout` が途中で奪う) */
+    /**
+     * ERROR 表示のタップ(再試行)。**利用者のタップだけ**が呼ぶ。ERROR 以外の状態のタップは無視する
+     * (B のタップは、ERROR のときだけ意味を持つ)。
+     */
+    var onErrorTap: (() -> Unit)? = null
+
+    private var downX = 0f
+    private var downY = 0f
+    private var downTime = 0L
+    private var tracking = false
+
+    /** 触れた指は自分が受ける(ページの横ドラッグは `PagerLayout` が途中で奪い、そのとき `ACTION_CANCEL` が来る) */
     @SuppressLint("ClickableViewAccessibility")
-    override fun onTouchEvent(e: MotionEvent): Boolean = true
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = e.x
+                downY = e.y
+                downTime = e.eventTime
+                tracking = true
+            }
+            MotionEvent.ACTION_MOVE -> if (tracking) {
+                val slop = ViewConfiguration.get(context).scaledTouchSlop
+                if (kotlin.math.abs(e.x - downX) > slop || kotlin.math.abs(e.y - downY) > slop) tracking = false
+            }
+            MotionEvent.ACTION_UP -> {
+                val tap = tracking && e.eventTime - downTime <= ViewConfiguration.getTapTimeout() * 2L
+                tracking = false
+                if (tap && uiState.voice == VoiceState.ERROR) onErrorTap?.invoke()
+            }
+            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN -> tracking = false
+        }
+        return true
+    }
 
     private companion object {
         val OK = Color.rgb(102, 220, 120)

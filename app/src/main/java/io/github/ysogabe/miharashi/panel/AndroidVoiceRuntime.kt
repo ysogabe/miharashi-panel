@@ -1,0 +1,86 @@
+package io.github.ysogabe.miharashi.panel
+
+import android.content.Context
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.SystemClock
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** `Handler` を [SessionScheduler] にする。Looper が終わっていれば、post は黙って捨てられる。 */
+class HandlerScheduler(private val handler: Handler) : SessionScheduler {
+    override fun post(task: () -> Unit) {
+        handler.post { task() }
+    }
+
+    override fun postDelayed(task: () -> Unit, delayMs: Long): Cancelable {
+        val r = Runnable { task() }
+        handler.postDelayed(r, maxOf(0L, delayMs))
+        return Cancelable { handler.removeCallbacks(r) }
+    }
+}
+
+/**
+ * 本番の [VoiceRuntime](設計書 §5.4)。`HandlerThread("daidai-session")` + キャッシュ型スレッドプール(通信用。3 本以上同時)で
+ * [VoiceSession] を動かす。マイクは [MicAudioSource]、再生は [WavPlayer]。録音・返答音声はファイルに書かない。
+ * [close] は取り消しの `DELETE` を送れるよう、取り消しのあとにスレッドプールとループを閉じる。
+ */
+class AndroidVoiceRuntime(
+    context: Context,
+    settings: DaidaiSettings,
+    listener: VoiceSessionListener,
+) : VoiceRuntime {
+    private val thread = HandlerThread("daidai-session").also { it.start() }
+    private val scheduler = HandlerScheduler(Handler(thread.looper))
+    private val executor: ExecutorService = Executors.newCachedThreadPool { r -> Thread(r, "daidai-io").apply { isDaemon = true } }
+    private val audio = MicAudioSource(context.applicationContext)
+    private val player = WavPlayer(context.applicationContext)
+    private val closed = AtomicBoolean(false)
+    private val session = VoiceSession(
+        audio = audio,
+        bridge = BridgeClient(settings.url, settings.token),
+        player = player,
+        clock = Clock { SystemClock.elapsedRealtime() },
+        scheduler = scheduler,
+        worker = ExecutorSessionWorker(executor, scheduler),
+        listener = listener,
+        appVersion = versionName(context.applicationContext),
+    )
+
+    override fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) {
+        if (closed.get()) return
+        session.start(reason, noticeId, autoStarted)
+    }
+
+    override fun retry() {
+        if (closed.get()) return
+        session.retry()
+    }
+
+    override fun cancel() {
+        if (closed.get()) return
+        session.cancel()
+    }
+
+    override fun stopMicNow() = audio.stop()
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        session.cancel() // closed が立つ前の cancel と同じ順序で、先に取り消しを積む
+        audio.stop()
+        // 取り消しの DELETE がプールに積まれたあとで、新規の受け付けを止めてループを閉じる
+        scheduler.post {
+            executor.shutdown()
+            thread.quitSafely()
+        }
+    }
+
+    private companion object {
+        fun versionName(context: Context): String = try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+}

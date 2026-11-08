@@ -94,9 +94,14 @@ data class VoiceSnapshot(
     val micActive: Boolean = false,
     /** 返答の `avatar_pose`(検証済み。未知の名前は画面側が `idle` にする) */
     val noticePose: String? = null,
+    /**
+     * セッションが進行中か(PREPARING〜REPLYING)。表示用の [state] は PREPARING を IDLE に畳むので、
+     * B の無操作タイマーを止める判定([PageController.sessionActive])はこの値を使う。
+     */
+    val active: Boolean = false,
 ) {
     override fun toString() = "VoiceSnapshot(state=$state, transcript=${transcript.length}chars, reply=${reply.length}chars, " +
-        "error=$error, mic=$micActive)"
+        "error=$error, mic=$micActive, active=$active)"
 }
 
 /** [VoiceSession] の通知。**セッションのスレッドで呼ばれる**ので、UI への反映は呼び出し側が main へ post する。 */

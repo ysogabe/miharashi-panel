@@ -679,7 +679,7 @@ class VoiceSession(
     private fun emit() {
         val snap = VoiceSnapshot(
             state = displayState(), transcript = transcript, reply = reply, error = error,
-            diagnostics = diagnostics, micActive = recordingNow(), noticePose = noticePose,
+            diagnostics = diagnostics, micActive = recordingNow(), noticePose = noticePose, active = _phase.isActive,
         )
         if (snap == lastSnapshot) return
         lastSnapshot = snap

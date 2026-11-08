@@ -28,6 +28,7 @@ class PanelActivity : Activity() {
     private val pages = PageController()
     private lateinit var settings: Settings
     private lateinit var daidai: DaidaiController
+    private lateinit var voice: DaidaiVoice
     private var sync: KioskSync? = null
     private var lastEndpoint: Pair<String, String>? = null
     private lateinit var connectivity: ConnectivityManager
@@ -83,9 +84,17 @@ class PanelActivity : Activity() {
                 }
                 sync?.send(action, done) ?: done("未接続")
             },
-            onSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
+            onSettings = {
+                voice.cancel() // 設定画面を開く: マイクは必ず止める
+                startActivity(Intent(this, SettingsActivity::class.java))
+            },
         )
-        view.onSleepChanged = { sleeping = it; pager.dotsVisible = !it; setBacklight(force = true) }
+        view.onSleepChanged = {
+            sleeping = it
+            if (it) voice.cancel() // 待機(時計)に入る: B 表示中は入らないが、念のためマイクを止める
+            pager.dotsVisible = !it
+            setBacklight(force = true)
+        }
         daidaiView = DaidaiView(this)
         // ページは常に A から始める。Intent の extras からページは指定できない(設計書 §4.1 の不変条件)
         pager = PagerLayout(this, view, daidaiView, pages, gestureSwallowed = { view.gestureSwallowed })
@@ -98,7 +107,15 @@ class PanelActivity : Activity() {
                 if (page == Page.B) main.postDelayed(pageTick, PAGE_TICK_MS)
             }
         })
-        daidai = DaidaiController(pages, { settings.daidai }, daidaiView::render, view::wake)
+        // B の表示は DaidaiController(通知カード・未設定の案内)→ DaidaiVoice(音声の状態を重ねる)→ DaidaiView の順
+        daidai = DaidaiController(pages, { settings.daidai }, { voice.onBaseUi(it) }, view::wake)
+        voice = DaidaiVoice(
+            pages, daidai.policy, { settings.daidai },
+            testVoiceRuntimeFactory ?: VoiceRuntimeFactory { s, l -> AndroidVoiceRuntime(applicationContext, s, l) },
+            HandlerScheduler(main), daidaiView::render, testStartSound ?: ToneStartSound(), SystemClock::elapsedRealtime,
+        )
+        daidai.entryListener = voice
+        daidaiView.onErrorTap = voice::onErrorTapped // 再試行は利用者のタップだけ
         light = LightSensorReader(this) { value ->
             lux = value
             if (active) {
@@ -138,6 +155,8 @@ class PanelActivity : Activity() {
         view.configured = settings.configured
         // 通知の基準は、KioskSync を始める前に取り直す(最初の status が基準になる)。B の表示もここで組み直す
         daidai.start(view.state, endpoint)
+        // セッションは始めない(B の確定でだけ始まる)。接続先(URL・トークン)が変わっていたら古いセッションを捨てる
+        voice.onResume()
         // 設定から戻ったときも、ここから数え直す
         view.sleepTimeoutMs = settings.sleepMinutes * 60_000L
         view.wake()
@@ -151,6 +170,7 @@ class PanelActivity : Activity() {
 
     override fun onPause() {
         active = false
+        voice.stop() // 背面: マイクを止め、セッションのスレッドも片づける
         // ページを A に戻す(B のタイマーと、A の無操作判定の保留も止まる)
         main.removeCallbacks(pageTick)
         pages.onPause(SystemClock.elapsedRealtime())
@@ -197,6 +217,7 @@ class PanelActivity : Activity() {
         }
         val source = sync ?: return
         if (!darkness.takeRequest(view.state, now)) return
+        voice.cancel() // モニター消灯: マイクは必ず止める
         val validUntilMs = view.state.lastOkAtMs!! + PanelState.FRESH_MS
         val cancelled = AtomicBoolean(false)
         automaticRequest = cancelled
@@ -219,8 +240,17 @@ class PanelActivity : Activity() {
         checkDarkness()
     }
 
+    override fun onDestroy() {
+        voice.stop()
+        super.onDestroy()
+    }
+
     companion object {
         private const val PAGE_TICK_MS = 1_000L
+
+        /** 試験用の差し込み口(本番では null)。Intent からは触れない。セッション一式とスピーカーを偽物にする */
+        internal var testVoiceRuntimeFactory: VoiceRuntimeFactory? = null
+        internal var testStartSound: StartSound? = null
     }
 
     /** immersive sticky: バーを隠し、端からのスワイプで一時的にだけ出す */
