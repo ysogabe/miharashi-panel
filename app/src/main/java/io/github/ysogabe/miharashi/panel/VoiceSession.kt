@@ -1,5 +1,6 @@
 package io.github.ysogabe.miharashi.panel
 
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sqrt
 
 /** [VoiceSession] の内部状態(設計書 §5.5)。並びは前進の順序(`ERROR` は順序の外)。表示用の [VoiceState] へは [VoiceSession] が変換する。 */
@@ -29,8 +30,12 @@ enum class VoicePhase {
  * ## マイクを開く許可(スレッドをまたぐ)
  * 世代番号はセッションのスレッドでしか進まないので、キューに積まれた作成成功の処理(`onCreated → openMic`)より後に処理される取消では、
  * マイクを開くのを止められない。そこで [cancel] と [stopMicNow](runtime の close も)は、**呼び出しスレッドから同期に**許可の番号を進め、
- * [openMic] は許可の照合と `AudioSource.start` を同じロックで行う。取消側は「許可を進める → `audio.stop()`」の順なので、
- * 開く処理が先なら stop が止め、取消が先なら開かない(許可が無効なら取消として終える)。許可は [doStart] の時点で控える。
+ * 許可は [java.util.concurrent.atomic.AtomicInteger] で、**取消側はロックを取らずに番号を進めるだけ**(続けて `audio.stop()`)。取消側([cancel]・[stopMicNow]・runtime の close)は
+ * メインスレッドから呼ばれるので、`AudioSource.start`(`AudioRecord` の作成・`startRecording()`)の完了を**待たない**。
+ * [openMic] は ① 開く前に許可を照合し、② `audio.start` を**ロックの外**で、許可の確認([AudioSource.start] の `isCurrent`)つきで呼び、③ 戻ったあとにもう一度許可を照合して、
+ * 無効になっていれば(開始の最中に取消された)`audio.stop()` を含む取消の終了([finish])に進む。取消が「開始の前・最中・後」のどこに入っても、
+ * 取消の後に新たに録音を始めたまま残ることはない: 前なら ① か `isCurrent` が弾き、最中なら `AudioSource` が公開せずに止めるか ③ が止め、後なら取消側の `audio.stop()` が止める。
+ * 許可は [doStart] の時点で控える。
  *
  * ## 停止の順序(どの状態からでも同じ。[finish])
  * 世代を進める → マイクを止めて release → `abortInFlight()` → 最良努力で `cancel(id)` → 再生停止 → 画面に反映 → `onEnded`。
@@ -125,10 +130,9 @@ class VoiceSession(
     private var replyAudio: ReplyAudioInfo? = null
     private var fetchToken = 0
 
-    // ---- スレッドをまたぐ「マイクを開く許可」。取消・close・stopMicNow が、呼び出しスレッドから同期で進める。
+    // ---- スレッドをまたぐ「マイクを開く許可」。取消・close・stopMicNow が、呼び出しスレッドからロックなしで進める。
     // 作成の成功の処理がセッションのキューに積まれたまま取消が来ても、その処理は許可の照合で弾かれる(マイクは開かない)。
-    private val micLock = Any()
-    private var micPermit = 0
+    private val micPermit = AtomicInteger()
 
     /** 現在の内部状態。**セッションのスレッドで読む**(テスト用の公開) */
     val phase: VoicePhase get() = _phase
@@ -159,8 +163,9 @@ class VoiceSession(
         safe { audio.stop() }
     }
 
+    /** ロックを取らない(`audio.start` の完了を待たない)。メインスレッドから呼ぶ */
     private fun revokeMicPermit() {
-        synchronized(micLock) { micPermit++ }
+        micPermit.incrementAndGet()
     }
 
     /** ERROR 表示のタップ。直前と同じ起点で新しいセッションを始める(利用者の操作なので `autoStarted = false`)。ERROR 以外では何もしない。 */
@@ -179,7 +184,7 @@ class VoiceSession(
         startReason = reason
         noticeId = notice?.takeIf { VoiceLimits.NOTICE_ID_REGEX.matches(it) }
         autoStarted = auto
-        openPermit = synchronized(micLock) { micPermit } // これ以後の cancel / stopMicNow / close で、この許可は無効になる
+        openPermit = micPermit.get() // これ以後の cancel / stopMicNow / close で、この許可は無効になる
         _phase = VoicePhase.PREPARING
         val g = gen
         arm(Timer.TOTAL, sessionMaxMs) { onTotalTimeout() }
@@ -320,33 +325,37 @@ class VoiceSession(
     }
 
     private fun openMic(g: Int) {
-        try {
-            // 許可の照合と開始を同じロックで行う。取消側は「許可を取り消す → audio.stop()」の順なので、
-            // 開始がロックの中で済んでいれば stop が止め、取り消しが先なら開始しない(空振りの stop のあとに開くことがない)
-            val permitted = synchronized(micLock) {
-                if (micPermit != openPermit) {
-                    false
-                } else {
-                    audio.start(
-                        onPcm = { bytes ->
-                            val copy = bytes.copyOf() // AudioRecord の読み取りバッファは使い回される
-                            scheduler.post { onPcm(g, copy) }
-                        },
-                        onError = { code -> scheduler.post { onMicError(g, code) } },
-                    )
-                    true
-                }
-            }
-            if (!permitted) {
-                // 取消(離脱・背面・close・stopMicNow)が先に来ていた。録音せず、取消として終える(ホストのセッションは finish が DELETE する)
-                finish(VoicePhase.IDLE, null, null, "cancelled")
-                return
-            }
-        } catch (e: SecurityException) {
-            fail(VoiceErrorCode.MIC_PERMISSION, "mic: permission")
+        val permit = openPermit
+        val isCurrent = { micPermit.get() == permit }
+        if (!isCurrent()) {
+            // 取消(離脱・背面・close・stopMicNow)が先に来ていた。録音せず、取消として終える(ホストのセッションは finish が DELETE する)
+            finish(VoicePhase.IDLE, null, null, "cancelled")
             return
+        }
+        var failure: Pair<VoiceErrorCode, String>? = null
+        try {
+            // ロックの外で開始する(`AudioRecord` の作成が遅くても、メインスレッドの取消はこれを待たない)。
+            // 開始の最中の取消は AudioSource が公開せずに止める(isCurrent)。取消を見ない実装でも、戻ったあとの照合で止める
+            audio.start(
+                onPcm = { bytes ->
+                    val copy = bytes.copyOf() // AudioRecord の読み取りバッファは使い回される
+                    scheduler.post { onPcm(g, copy) }
+                },
+                onError = { code -> scheduler.post { onMicError(g, code) } },
+                isCurrent = isCurrent,
+            )
+        } catch (e: SecurityException) {
+            failure = VoiceErrorCode.MIC_PERMISSION to "mic: permission"
         } catch (e: Exception) {
-            fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: ${e.javaClass.simpleName}")
+            failure = VoiceErrorCode.MIC_UNAVAILABLE to "mic: ${e.javaClass.simpleName}"
+        }
+        if (!isCurrent()) {
+            // 開始の最中に取消された。finish が audio.stop() を呼ぶので、AudioSource が静かに無視していても録音は残らない
+            finish(VoicePhase.IDLE, null, null, "cancelled")
+            return
+        }
+        failure?.let { (code, diag) ->
+            fail(code, diag)
             return
         }
         if (!recordingNow()) {

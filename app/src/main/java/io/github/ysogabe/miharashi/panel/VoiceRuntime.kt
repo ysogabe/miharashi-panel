@@ -17,9 +17,20 @@ import java.util.concurrent.Executor
  *   [recording] が false に戻ることを、`MicAudioSource` 自身のテストで確認すること(VoiceSession のテストは
  *   録音状態を false にしてから投げるフェイクを使うので、release の保証までは確かめていない)。
  * - [recording] は実際の録音状態(`recordingState == RECORDSTATE_RECORDING`)。画面の「● マイク使用中」はこれに連動する。
+ * - **[stop] は [start] の完了を待たない**(別スレッドで [start] が実行中でも、ロック待ちなどで呼び出し側を止めない。メインスレッドから呼ばれる)。
+ *   [start] の実行中に [stop] が呼ばれたら、実装は取消を覚えて即座に戻り、[start] の側が、作成・開始が済んだ時点で録音を止めて release し、
+ *   `onError` も `onPcm` も呼ばずに静かに戻る(そのとき [recording] は false)。
  */
 interface AudioSource {
     fun start(onPcm: (ByteArray) -> Unit, onError: (VoiceErrorCode) -> Unit)
+
+    /**
+     * [start] の取消つき版。[isCurrent] が false を返したら(呼び出し側が取り消した)、実装は**録音を始めず**(始めていたら直ちに止めて release し)、
+     * `onError` も `onPcm` も呼ばずに戻る。確認は録音を始める直前と公開の直前に行う。既定は取消を見ない [start](テスト用のフェイクなど)。
+     * 取消を見ない実装でも、呼び出し側([VoiceSession])は戻ったあとにもう一度確認し、取り消されていれば [stop] する。
+     */
+    fun start(onPcm: (ByteArray) -> Unit, onError: (VoiceErrorCode) -> Unit, isCurrent: () -> Boolean) = start(onPcm, onError)
+
     fun stop()
     val recording: Boolean
 }

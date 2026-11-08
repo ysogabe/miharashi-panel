@@ -327,4 +327,127 @@ class MicAudioSourceTest {
     @Test fun chunkSizeIs100msOfPcm16() {
         assertEquals(3200, MicAudioSource.CHUNK_BYTES)
     }
+
+    // ---- start の最中の stop(取消): stop は待たず、start の側が静かに止める
+
+    /** 別スレッドで `start` を呼び、ファクトリ(作成)または startRecording の中で止める */
+    private class InFlight(val rec: FakeRecorder, val gateInStartRecording: Boolean = false) {
+        val inCreate = CountDownLatch(1)
+        val finishCreate = CountDownLatch(1)
+        val e = Events()
+        val src = MicAudioSource(
+            hasPermission = { true },
+            recorderFactory = RecorderFactory {
+                if (!gateInStartRecording) {
+                    inCreate.countDown()
+                    finishCreate.await(10, TimeUnit.SECONDS)
+                }
+                rec
+            },
+            sleepMs = { },
+        )
+        val startThread: Thread = Thread {
+            src.start({ e.pcm.add(it.copyOf()) }, { e.errorCount.incrementAndGet(); e.errors.add(it) })
+        }.also { it.isDaemon = true }
+    }
+
+    @Test fun stopWhileTheRecorderIsBeingCreatedReturnsImmediatelyAndTheCreatorReleasesQuietly() {
+        val f = InFlight(FakeRecorder())
+        f.startThread.start()
+        assertTrue("作成に入った", f.inCreate.await(10, TimeUnit.SECONDS))
+        val t0 = System.nanoTime()
+        val stopper = Thread { f.src.stop() }.apply { start() }
+        stopper.join(5_000)
+        assertFalse("stop は作成の完了を待たない", stopper.isAlive)
+        assertTrue("200 ms 以内に戻る", (System.nanoTime() - t0) / 1_000_000L <= 200)
+        assertEquals("作成の最中は触れない(まだ公開されていない)", 0, f.rec.releases.get())
+        f.finishCreate.countDown()
+        f.startThread.join(10_000)
+        assertFalse(f.startThread.isAlive)
+        assertEquals("作成が済んだら、録音を始めずに release する", 1, f.rec.releases.get())
+        assertFalse("録音を始めていない", f.rec.recordingFlag)
+        assertFalse(f.src.recording)
+        assertEquals("onError は呼ばない", 0, f.e.errorCount.get())
+        Thread.sleep(50)
+        assertTrue("onPcm も呼ばない", f.e.pcm.isEmpty())
+    }
+
+    @Test fun stopWhileStartRecordingIsRunningStopsAndReleasesTheStartedRecorderWithoutErrorOrPcm() {
+        val inStartRecording = CountDownLatch(1)
+        val finishStartRecording = CountDownLatch(1)
+        val rec = object : Recorder {
+            val inner = FakeRecorder()
+            override val initialized get() = inner.initialized
+            override val isRecording get() = inner.isRecording
+            override fun startRecording() {
+                inStartRecording.countDown()
+                finishStartRecording.await(10, TimeUnit.SECONDS)
+                inner.startRecording()
+            }
+            override fun read(buffer: ByteArray, length: Int) = inner.read(buffer, length)
+            override fun stop() = inner.stop()
+            override fun release() = inner.release()
+        }
+        val e = Events()
+        val src = MicAudioSource({ true }, RecorderFactory { rec }, sleepMs = { })
+        val starter = Thread { src.begin(e) }.apply { isDaemon = true; start() }
+        assertTrue(inStartRecording.await(10, TimeUnit.SECONDS))
+        val t0 = System.nanoTime()
+        val stopper = Thread { src.stop() }.apply { start() }
+        stopper.join(5_000)
+        assertFalse("stop は startRecording の完了を待たない", stopper.isAlive)
+        assertTrue((System.nanoTime() - t0) / 1_000_000L <= 200)
+        finishStartRecording.countDown()
+        starter.join(10_000)
+        assertFalse(starter.isAlive)
+        assertEquals("開始したものを start の側が止めて release する", 1, rec.inner.releases.get())
+        assertEquals(1, rec.inner.stops.get())
+        assertFalse(src.recording)
+        assertFalse(rec.inner.recordingFlag)
+        assertEquals(0, e.errorCount.get())
+        Thread.sleep(50)
+        assertTrue(e.pcm.isEmpty())
+    }
+
+    @Test fun isCurrentTurningFalseDuringTheCreationStopsQuietlyWithoutAStop() {
+        val rec = FakeRecorder()
+        var current = true
+        val e = Events()
+        val src = MicAudioSource({ true }, RecorderFactory { current = false; rec }, sleepMs = { }) // 作成の最中に呼び出し側が取り消す
+        src.start({ e.pcm.add(it) }, { e.errors.add(it) }) { current }
+        assertEquals("録音を始めずに release", 1, rec.releases.get())
+        assertEquals(0, rec.stops.get())
+        assertFalse(rec.recordingFlag)
+        assertFalse(src.recording)
+        assertTrue(e.errors.isEmpty())
+    }
+
+    @Test fun isCurrentFalseBeforeStartDoesNotEvenCreateTheRecorder() {
+        val calls = AtomicInteger()
+        val e = Events()
+        val src = MicAudioSource({ true }, RecorderFactory { calls.incrementAndGet(); FakeRecorder() }, sleepMs = { })
+        src.start({ e.pcm.add(it) }, { e.errors.add(it) }) { false }
+        assertEquals(0, calls.get())
+        assertTrue(e.errors.isEmpty())
+    }
+
+    @Test fun aCancelledCreationThatFailsReportsNoError() {
+        var current = true
+        val e = Events()
+        val src = MicAudioSource({ true }, RecorderFactory { current = false; null }, sleepMs = { })
+        src.start({ e.pcm.add(it) }, { e.errors.add(it) }) { current }
+        assertTrue("取消されたあとの失敗は知らせない", e.errors.isEmpty())
+    }
+
+    @Test fun aNormalStartIsStillPublishedAndStoppedByStop() {
+        val rec = FakeRecorder()
+        val s = source(rec)
+        val e = Events()
+        s.start({ e.pcm.add(it) }, { e.errors.add(it) }) { true }
+        assertTrue(s.recording)
+        s.stop()
+        assertEquals(1, rec.stops.get())
+        assertEquals(1, rec.releases.get())
+        assertFalse(s.recording)
+    }
 }

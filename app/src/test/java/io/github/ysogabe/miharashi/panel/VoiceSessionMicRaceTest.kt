@@ -6,6 +6,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -111,68 +112,172 @@ class VoiceSessionMicRaceTest {
         assertFalse(r.audio.recording)
     }
 
+    // ---- 実スレッド: 取消側(メインスレッドを模す)は audio.start の完了を待たない
+
     /**
-     * 実スレッド: セッションのスレッドが `audio.start` の最中のとき、別スレッドの `stopMicNow()` は開始の完了を待ち(排他)、
-     * そのあとで止める。開始と取消が重なっても「止めたあとに録音が始まる」ことがない。
+     * セッションのスレッドが `audio.start` の中で止まっている状態を作る実スレッドの組み立て。
+     * [cooperative] が true のフェイクは [AudioSource.start] の `isCurrent` を見て、取消されていれば録音を始めずに戻る(MicAudioSource と同じ)。
+     * false のフェイクは取消を見ずに録音を始めてしまう(VoiceSession の「戻ったあとの照合 + stop」で止まることの確認)。
      */
-    @Test fun stopMicNowWaitsForAnInProgressStartAndThenStopsTheMic() {
-        val session = Executors.newSingleThreadExecutor { r -> Thread(r, "test-session") }
+    private class RealRig(cooperative: Boolean) {
+        val sessionExec = Executors.newSingleThreadExecutor { r -> Thread(r, "test-session") }
         val pool = Executors.newCachedThreadPool { r -> Thread(r, "test-io").apply { isDaemon = true } }
-        try {
-            val inStart = CountDownLatch(1)
-            val finishStart = CountDownLatch(1)
-            val recording = AtomicBoolean(false)
-            val stops = AtomicInteger()
-            val startedAfterStop = AtomicBoolean(false)
-            val audio = object : AudioSource {
-                override fun start(onPcm: (ByteArray) -> Unit, onError: (VoiceErrorCode) -> Unit) {
-                    inStart.countDown()
-                    finishStart.await(10, TimeUnit.SECONDS)
-                    if (stops.get() > 0) startedAfterStop.set(true)
-                    recording.set(true)
-                }
+        val inStart = CountDownLatch(1)
+        val finishStart = CountDownLatch(1)
+        val isRecording = AtomicBoolean(false)
+        val stops = AtomicInteger()
+        val starts = AtomicInteger()
+        val pcmEmitted = AtomicInteger()
+        val deleted = CopyOnWriteArrayList<String>()
+        val listener = RecordingListener(Sim(), mutableListOf())
 
-                override fun stop() {
-                    stops.incrementAndGet()
-                    recording.set(false)
-                }
+        private val audio = object : AudioSource {
+            private fun doStart(onPcm: (ByteArray) -> Unit, isCurrent: () -> Boolean) {
+                starts.incrementAndGet()
+                inStart.countDown()
+                finishStart.await(10, TimeUnit.SECONDS)
+                if (cooperative && !isCurrent()) return
+                isRecording.set(true)
+                pcmEmitted.incrementAndGet()
+                onPcm(ByteArray(3200)) // 録音が始まっていれば、音も出てしまう(取消の後は VoiceSession が捨てること)
+            }
 
-                override val recording: Boolean get() = recording.get()
-            }
-            val bridge = object : BridgeApi {
-                override fun createSession(req: SessionRequest) = SessionInfo("s-1")
-                override fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean) = ChunkAck(AckState.LISTENING, seq)
-                override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
-                override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)
-                override fun cancel(id: String) {}
-                override fun abortInFlight() {}
-            }
-            val scheduler = object : SessionScheduler {
-                override fun post(task: () -> Unit) {
-                    session.execute { task() }
-                }
+            override fun start(onPcm: (ByteArray) -> Unit, onError: (VoiceErrorCode) -> Unit) = doStart(onPcm) { true }
+            override fun start(onPcm: (ByteArray) -> Unit, onError: (VoiceErrorCode) -> Unit, isCurrent: () -> Boolean) =
+                if (cooperative) doStart(onPcm, isCurrent) else start(onPcm, onError)
 
-                override fun postDelayed(task: () -> Unit, delayMs: Long) = Cancelable { } // タイマーは使わない
+            override fun stop() {
+                stops.incrementAndGet()
+                isRecording.set(false)
             }
-            val s = VoiceSession(
-                audio, bridge, FakePlayer(mutableListOf()), Clock { System.nanoTime() / 1_000_000L }, scheduler,
-                ExecutorSessionWorker(pool, scheduler), RecordingListener(Sim(), mutableListOf()),
-            )
-            s.start(StartReason.SWIPE, null, false)
+
+            override val recording: Boolean get() = isRecording.get()
+        }
+        private val bridge = object : BridgeApi {
+            override fun createSession(req: SessionRequest) = SessionInfo("s-1")
+            override fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean) = ChunkAck(AckState.LISTENING, seq)
+            override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
+            override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)
+            override fun cancel(id: String) { deleted += id }
+            override fun abortInFlight() {}
+        }
+        private val scheduler = object : SessionScheduler {
+            override fun post(task: () -> Unit) {
+                try { sessionExec.execute { task() } } catch (_: RuntimeException) { }
+            }
+
+            override fun postDelayed(task: () -> Unit, delayMs: Long) = Cancelable { } // タイマーは使わない
+        }
+        val session = VoiceSession(
+            audio, bridge, FakePlayer(mutableListOf()), Clock { System.nanoTime() / 1_000_000L }, scheduler,
+            ExecutorSessionWorker(pool, scheduler), listener,
+        )
+
+        /** セッションのスレッドが `audio.start` の中で止まるまで進める */
+        fun startAndWaitInsideAudioStart() {
+            session.start(StartReason.SWIPE, null, false)
             assertTrue("セッションのスレッドが audio.start に入った", inStart.await(10, TimeUnit.SECONDS))
-            val stopper = Thread { s.stopMicNow() }.apply { start() }
-            stopper.join(300)
-            assertTrue("開始の最中は stopMicNow が待たされる(許可の照合と開始が排他)", stopper.isAlive)
-            assertEquals(0, stops.get())
+        }
+
+        /** [block] を別スレッド(メインを模す)で呼び、戻るまでの時間(ms)を返す。[LIMIT_MS] を超えたら失敗 */
+        fun timedFromMain(block: () -> Unit): Long {
+            var elapsed = -1L
+            val t = Thread {
+                val t0 = System.nanoTime()
+                block()
+                elapsed = (System.nanoTime() - t0) / 1_000_000L
+            }.apply { start() }
+            t.join(5_000)
+            assertFalse("audio.start の完了を待たずに戻る(5 秒待っても戻らない)", t.isAlive)
+            assertTrue("取消側の呼び出しが ${LIMIT_MS} ms 以内に戻る(実測 $elapsed ms)", elapsed in 0..LIMIT_MS)
+            return elapsed
+        }
+
+        /** ラッチを解放して、セッションのスレッドが取消として終えるまで待つ */
+        fun releaseAndSettle() {
             finishStart.countDown()
-            stopper.join(10_000)
-            assertFalse(stopper.isAlive)
-            assertTrue("開始が済んだあとで止める", stops.get() >= 1)
-            assertFalse("止めたあとに録音が始まっていない", recording.get())
-            assertFalse(startedAfterStop.get())
-        } finally {
-            session.shutdownNow()
+            val deadline = System.nanoTime() + 10_000_000_000L
+            while (deleted.isEmpty() && System.nanoTime() < deadline) Thread.sleep(5)
+            sessionExec.submit { }.get(10, TimeUnit.SECONDS) // 積まれた処理がすべて済むまで
+            pool.shutdown()
+            pool.awaitTermination(10, TimeUnit.SECONDS)
+            sessionExec.submit { }.get(10, TimeUnit.SECONDS)
+        }
+
+        fun assertCleanlyCancelled() {
+            assertFalse("録音が残らない", isRecording.get())
+            assertFalse(audio.recording)
+            assertTrue("止めている", stops.get() >= 1)
+            assertEquals("マイクを開いた通知(開始音)を出さない", 0, listener.micOpenedAt.size)
+            assertEquals("取消として 1 回だけ終わる", listOf(false to "cancelled"), listener.ended)
+            assertEquals("ホストのセッションを 1 回だけ消す", listOf("s-1"), deleted.toList())
+            val last = listener.snaps.lastOrNull()
+            assertTrue("マイク使用中の表示が残らない", last == null || !last.micActive)
+        }
+
+        fun close() {
+            sessionExec.shutdownNow()
             pool.shutdownNow()
         }
+
+        companion object {
+            const val LIMIT_MS = 200L
+        }
+    }
+
+    private fun realRigTest(cooperative: Boolean, body: (RealRig) -> Unit) {
+        val rig = RealRig(cooperative)
+        try {
+            body(rig)
+        } finally {
+            rig.finishStart.countDown()
+            rig.close()
+        }
+    }
+
+    @Test fun cancelDoesNotWaitForAnInProgressAudioStartAndNothingIsLeftRecording() = realRigTest(cooperative = false) { r ->
+        r.startAndWaitInsideAudioStart()
+        r.timedFromMain { r.session.cancel() }
+        r.releaseAndSettle()
+        r.assertCleanlyCancelled()
+    }
+
+    @Test fun stopMicNowDoesNotWaitForAnInProgressAudioStartAndNothingIsLeftRecording() = realRigTest(cooperative = false) { r ->
+        r.startAndWaitInsideAudioStart()
+        r.timedFromMain { r.session.stopMicNow() }
+        // stopMicNow はホストへ何も送らず、状態の終了は cancel と併せて使う(DaidaiVoice / close の順序)
+        r.timedFromMain { r.session.cancel() }
+        r.releaseAndSettle()
+        r.assertCleanlyCancelled()
+    }
+
+    @Test fun theCloseSequenceDoesNotWaitForAnInProgressAudioStartAndNothingIsLeftRecording() = realRigTest(cooperative = false) { r ->
+        r.startAndWaitInsideAudioStart()
+        // AndroidVoiceRuntime.close: cancel → stopMicNow(→ 以後に executor / ループの終了)。メインスレッドを模す 1 本の呼び出し
+        r.timedFromMain {
+            r.session.cancel()
+            r.session.stopMicNow()
+        }
+        r.releaseAndSettle()
+        r.assertCleanlyCancelled()
+    }
+
+    @Test fun anAudioSourceThatHonoursIsCurrentNeverStartsRecordingAfterTheCancel() = realRigTest(cooperative = true) { r ->
+        r.startAndWaitInsideAudioStart()
+        r.timedFromMain {
+            r.session.cancel()
+            r.session.stopMicNow()
+        }
+        r.releaseAndSettle()
+        assertEquals("取消を見る実装は録音を始めない(音も出ない)", 0, r.pcmEmitted.get())
+        r.assertCleanlyCancelled()
+    }
+
+    @Test fun pcmEmittedByANonCooperativeSourceAfterTheCancelIsDropped() = realRigTest(cooperative = false) { r ->
+        r.startAndWaitInsideAudioStart()
+        r.timedFromMain { r.session.cancel() }
+        r.releaseAndSettle()
+        assertEquals("取消を見ない実装は音を出してしまう", 1, r.pcmEmitted.get())
+        r.assertCleanlyCancelled() // それでも VoiceSession は送らず(世代が違う)、録音も残さない
     }
 }

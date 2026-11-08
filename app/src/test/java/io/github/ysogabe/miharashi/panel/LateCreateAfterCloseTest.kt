@@ -33,18 +33,31 @@ class LateCreateAfterCloseTest {
     /** 呼び出し(通信)を [runPending] まで実行せずに預かる。実行は通信のスレッド、結果の配送だけがセッションのスレッド */
     private class DeferredWorker(private val scheduler: SessionScheduler) : SessionWorker {
         private val pending = mutableListOf<() -> Unit>()
+        private val deliveries = mutableListOf<() -> Unit>()
 
         override fun <T> run(call: () -> T, deliver: (Result<T>) -> Unit) {
             pending += {
                 val result = runCatching(call)
-                scheduler.post { deliver(result) }
+                deliveries += { scheduler.post { deliver(result) } }
             }
         }
 
-        fun runPending() {
+        /** 通信の呼び出しだけを実行する(結果の配送はまだ)。「作成は成功して戻ったが、配送の前に close が完了する」順序を作る */
+        fun runCallsOnly() {
             val p = pending.toList()
             pending.clear()
             p.forEach { it() }
+        }
+
+        fun deliver() {
+            val d = deliveries.toList()
+            deliveries.clear()
+            d.forEach { it() }
+        }
+
+        fun runPending() {
+            runCallsOnly()
+            deliver()
         }
     }
 
@@ -64,22 +77,24 @@ class LateCreateAfterCloseTest {
     }
 
     /** 本番の [AndroidVoiceRuntime] と同じ取消・終了の順序の runtime */
-    private class Rig(wrap: Boolean) {
+    private class Rig(private val wrap: Boolean) {
         val sim = Sim()
         val gated = GatedScheduler(sim)
         val worker = DeferredWorker(gated)
         val local = LocalBridge()
         val closed = AtomicBoolean(false)
+        val bridge = DeleteOnCloseBridge(local)
         val audio = FakeAudio(sim, mutableListOf())
         val listener = RecordingListener(sim, mutableListOf())
         val session = VoiceSession(
-            audio, if (wrap) DeleteOnCloseBridge(local) { closed.get() } else local, FakePlayer(mutableListOf()), sim, gated, worker, listener,
+            audio, if (wrap) bridge else local, FakePlayer(mutableListOf()), sim, gated, worker, listener,
         )
 
         fun close() {
             if (!closed.compareAndSet(false, true)) return
             session.cancel()
             session.stopMicNow()
+            if (wrap) bridge.close().forEach { runCatching { bridge.cancel(it) } } // AndroidVoiceRuntime.close: 未取消の ID を回収して DELETE
             gated.post { gated.terminated = true } // executor.shutdown(); thread.quitSafely()
         }
     }
@@ -96,6 +111,22 @@ class LateCreateAfterCloseTest {
         r.sim.settle()
         assertEquals("配送は捨てられた", 1, r.gated.dropped)
         assertEquals("通信のスレッドで、その場で DELETE", listOf("s-1"), r.local.cancels)
+        assertEquals("マイクは開かない", 0, r.audio.startCount)
+    }
+
+    /** レビュー指摘の隙間: 作成が成功して戻ったあと、配送の前に close が完了しても、close が回収して DELETE する */
+    @Test fun aCreateThatSucceededJustBeforeTheCloseButWasNotDeliveredYetIsStillDeleted() {
+        val r = Rig(wrap = true)
+        r.session.start(StartReason.SWIPE, null, false)
+        r.sim.settle()
+        r.worker.runCallsOnly() // 作成は成功して戻った(DeleteOnCloseBridge に登録された)。結果はまだ配送されない
+        assertTrue("この時点ではまだ消さない", r.local.cancels.isEmpty())
+        r.close() // 配送より先に close が完了する(ループも終わる)
+        r.sim.settle()
+        r.worker.deliver() // 終了済みのループへの配送は捨てられる
+        r.sim.settle()
+        assertEquals("配送は捨てられた", 1, r.gated.dropped)
+        assertTrue("取消側は session_id を知らなくても、DELETE される", r.local.cancels.contains("s-1"))
         assertEquals("マイクは開かない", 0, r.audio.startCount)
     }
 
