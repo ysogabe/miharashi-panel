@@ -23,6 +23,18 @@ class DaidaiTextTest {
         assertEquals("idle", DaidaiText.pose(VoiceState.ERROR, null, false))
     }
 
+    @Test fun vocabularyHasSixPosesAndMilestoneAndMakingPassThroughTheNoticePose() {
+        assertEquals(listOf("idle", "listening", "working", "talking", "milestone", "making"), DaidaiPose.ALL)
+        assertEquals("milestone", DaidaiText.pose(VoiceState.IDLE, "milestone", true))
+        assertEquals("making", DaidaiText.pose(VoiceState.IDLE, "making", true))
+        assertEquals("idle", DaidaiText.pose(VoiceState.IDLE, "milestone", false))
+        assertEquals("listening", DaidaiText.pose(VoiceState.LISTENING, "making", true))
+        assertEquals("idle", DaidaiText.pose(VoiceState.ERROR, "milestone", true))
+        val n = DaidaiNotice("n", "t", "b", 1)
+        assertEquals("milestone", DaidaiUiState(notice = n, noticePose = "milestone").avatarPose)
+        assertEquals("making", DaidaiUiState(notice = n, noticePose = "making").avatarPose)
+    }
+
     @Test fun noticePoseWinsOnlyWhileTheCardIsShownAndIdle() {
         assertEquals("talking", DaidaiText.pose(VoiceState.IDLE, "talking", true))
         assertEquals("idle", DaidaiText.pose(VoiceState.IDLE, "talking", false))

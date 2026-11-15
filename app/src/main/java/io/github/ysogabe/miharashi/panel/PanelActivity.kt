@@ -38,6 +38,7 @@ class PanelActivity : Activity() {
     private var lux: Float? = null
     private var sleeping = false
     private var active = false
+    private var bVisible = false
     private var automaticRequest: AtomicBoolean? = null
     private val darknessDeadline = Runnable { checkDarkness() }
 
@@ -95,6 +96,7 @@ class PanelActivity : Activity() {
             sleeping = it
             if (it) voice.cancel() // 待機(時計)に入る: B 表示中は入らないが、念のためマイクを止める
             pager.dotsVisible = !it
+            updateAvatarVideo()
             setBacklight(force = true)
         }
         daidaiView = DaidaiView(this)
@@ -102,7 +104,11 @@ class PanelActivity : Activity() {
         pager = PagerLayout(this, view, daidaiView, pages, gestureSwallowed = { view.gestureSwallowed })
         pages.addListener(object : PageListener {
             // B が少しでも見えている間は、A の無操作判定(待機時計)を保留する
-            override fun onBVisibleChanged(visible: Boolean) { view.idleSuspended = visible }
+            override fun onBVisibleChanged(visible: Boolean) {
+                view.idleSuspended = visible
+                bVisible = visible
+                updateAvatarVideo()
+            }
 
             override fun onSettled(page: Page, reason: PageReason) {
                 main.removeCallbacks(pageTick)
@@ -137,6 +143,11 @@ class PanelActivity : Activity() {
         setContentView(pager)
     }
 
+    /** アバターの動画は、B が見えていて、前面で、待機時計でないときだけデコードする */
+    private fun updateAvatarVideo() {
+        daidaiView.videoActive = bVisible && active && !sleeping
+    }
+
     override fun onResume() {
         super.onResume()
         active = true
@@ -145,6 +156,7 @@ class PanelActivity : Activity() {
         pages.onResume(SystemClock.elapsedRealtime())
         lux = null
         sleeping = false
+        updateAvatarVideo()
         if (darkness.thresholdLux != settings.darkLux) darkness = DarknessPolicy(settings.darkLux)
         hideSystemBars()
         view.setForegroundActive(true)
@@ -177,6 +189,7 @@ class PanelActivity : Activity() {
 
     override fun onPause() {
         active = false
+        updateAvatarVideo()
         voice.stop() // 背面: マイクを止め、セッションのスレッドも片づける
         // ページを A に戻す(B のタイマーと、A の無操作判定の保留も止まる)
         main.removeCallbacks(pageTick)

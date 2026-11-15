@@ -113,6 +113,12 @@ class DaidaiViewDrawingTest {
         val talking = avatarArea(DaidaiUiState(notice = notice, noticePose = "talking"))
         val unknown = avatarArea(DaidaiUiState(notice = notice, noticePose = "dancing"))
         assertTrue(diff(idle, talking) > 20)
+        // milestone / making は idle に読み替えず、それぞれ別の絵
+        val milestone = avatarArea(DaidaiUiState(notice = notice, noticePose = "milestone"))
+        val making = avatarArea(DaidaiUiState(notice = notice, noticePose = "making"))
+        assertTrue(diff(idle, milestone) > 20)
+        assertTrue(diff(idle, making) > 20)
+        assertTrue(diff(milestone, making) > 20)
         assertArrayEquals(idle, unknown)
     }
 
