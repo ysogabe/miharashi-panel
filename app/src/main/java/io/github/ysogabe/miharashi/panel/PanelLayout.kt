@@ -54,6 +54,12 @@ class PanelLayout(val width: Float, val height: Float) {
     val center = box(200f, 56f, 720f, BASE_H)
     val side = box(720f, 56f, BASE_W, BASE_H)
 
+    /**
+     * 未読の手掛かり(R17)。ヘッダーの、WIFI の表示(x=624 から約 60)と右端の時刻(x=860 付近から)のあいだ。
+     * ボタンではない(`buttons` に入れない)。ほかの矩形は動かさない
+     */
+    val daidaiChip = box(712f, 14f, 836f, 42f)
+
     val settings = Button("settings", null, "設定", Action.Settings, box(8f, 420f, 192f, 472f), enabled = true)
 
     /** 前の画面・決定・次の画面(キオスクの prev / select / next、テンキーの 4 / 5 / 6) */

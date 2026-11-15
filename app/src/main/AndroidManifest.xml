@@ -8,6 +8,10 @@
     <!-- Android 10 以降、BOOT_COMPLETED から Activity を前面に出すには「他のアプリの上に表示」の許可が要る。
          scripts/install.sh が adb の appops で許可する -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- だいだい連携画面(B)の音声入力。権限ダイアログは出さない(キオスク運用)。scripts/install.sh が adb の pm grant で許可する。
+         マイクを開くのは MicAudioSource だけで、VoiceSession.start 経由。止め方: 本体のマイクオフスイッチ、
+         設定の daidai_url を空にする、adb shell pm revoke <pkg> android.permission.RECORD_AUDIO -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="false"

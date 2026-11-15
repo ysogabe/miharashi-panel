@@ -104,7 +104,7 @@ class LightSensorReaderTest {
         shadowOf(context.getSystemService(KeyguardManager::class.java)).setKeyguardLocked(true)
         val controller = Robolectric.buildActivity(PanelActivity::class.java).setup()
         val activity = controller.get()
-        val panel = activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as PanelView
+        val panel = (activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as PagerLayout).pageA as PanelView
         try {
             panel.sleepTimeoutMs = 1L
             shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS)
@@ -168,7 +168,7 @@ class LightSensorReaderTest {
             val server = MockWebServer().apply { start() }
             val controller = Robolectric.buildActivity(PanelActivity::class.java).setup()
             val activity = controller.get()
-            val panel = activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as PanelView
+            val panel = (activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as PagerLayout).pageA as PanelView
             val sync = KioskSync(KioskClient(server.url("/").toString(), "test-token-0123456789"), PanelState()) {}
             // Hold the real sender queue without starting unrelated polling and SSE workers.
             KioskSync::class.java.getDeclaredField("running").apply { isAccessible = true }.set(sync, true)
