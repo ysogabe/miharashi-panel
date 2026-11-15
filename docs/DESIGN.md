@@ -153,6 +153,17 @@ A と B の 2 画面を、`PagerLayout` に横に並べます。左へスワイ�
 | `SwipeDecision` | スワイプの確定条件(距離・速度・方向) |
 | `PanelView` | A。`idleSuspended`(B が見える間は無操作判定を保留)と `gestureSwallowed`(時計から戻る指ではページを動かさない)を足し、未読チップ用の `daidaiUnread` を足した。ほかは従来のまま |
 | `DaidaiView` / `DaidaiLayout` / `DaidaiUiState` | B の描画(アバター、通知カード、状態チップ、認識結果、返答)と表示データ。照度のコントラスト補正(`contrastStrength`)に従う |
+| `AvatarAssets` / `BitmapAvatarPainter` / `AvatarVideo` / `AvatarContrast` | アバター。6 ポーズ(`idle` `listening` `working` `talking` `milestone` `making`)の静止画と動画。下の「アバター」 |
+
+### アバター
+
+アバターは、assets の `daidai/daidai-<pose>.png`(静止画)と `.mp4`(動画)を使います。本体と同じ角丸のカード枠で、絵の四隅を短い辺の 14% の半径で切り抜きます。
+
+- 静止画は `DaidaiView.onDraw` が常に描きます。動画は子の `TextureView`(`MediaPlayer` 1 つ、繰り返し・消音)で、静止画の上に重ねます。
+- ポーズが変わると動画を `alpha = 0` で隠し、新しいポーズを開き直して、最初のフレームが描かれてから見せます。開けない・デコードできないポーズは、動いている間は開き直さず、静止画のままにします。
+- B が見えない間、待機時計、背面ではデコードしません。前面で待機時計でないかは `PanelActivity` が `videoActive` で伝え、B が実際に見えているかは `DaidaiView` が自分の `visibility` で見ます(`PagerLayout` が B を画面に出している間だけ VISIBLE にします)。A から右へ引いた間は `PageController.bVisible` が true でも B は INVISIBLE のままなので、動画は開きません。
+- 動画 → 静止画 → 仮のドット絵(PNG が読めないとき)の順に落とします。
+- 照度の補正(`contrastStrength`)は、静止画と動画の両方に同じ `ColorMatrix` でかけます(コントラスト 1.0→1.25、中間灰を中心に)。強さ 0 は補正なしです。
 
 ページを変えるのは、利用者のスワイプ、通知による自動切替、B の無操作での復帰だけです。`onResume` は Intent に関係なく常に A から始め、Intent の extras でページの指定やマイクの起動はできません。
 

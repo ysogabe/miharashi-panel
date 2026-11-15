@@ -123,7 +123,9 @@ Panel 側は `BridgeApi` のインターフェースの裏に隠す（テスト�
 | `MicAudioSource` | Android | `AudioRecord`（16 kHz / mono / PCM16）。読んだ PCM を `VoiceSession` に渡す |
 | `BridgeClient` | Android 寄り | `BridgeApi` の実装。`KioskClient` と同じ流儀（`HttpURLConnection`）。URL は §5.2.0 のとおり自分で組む |
 | `WavPlayer` | Android | 返答の WAV を**メモリ上**で検証し、`AudioTrack` で再生する。ファイルに書かない。AudioFocus を取る |
-| `AvatarAssets` | Android | ポーズ別のドット絵（APK 同梱の案、O-6） |
+| `AvatarAssets` / `BitmapAvatarPainter` | Android | ポーズ別の静止画。assets の PNG を、短い辺の 14% の角丸で切り抜いて描く（読めないポーズだけ仮のドット絵 `PixelSprite`）。O-6 |
+| `AvatarVideo` / `VideoPlayer` / `MediaPlayerVideoPlayer` | 純 Kotlin ＋ Android | ポーズ別の動画の再生制御（`AvatarVideo` は Android の View に触れず、偽のプレイヤーでテストする）と、`MediaPlayer` による実装。`DaidaiView` の子の `TextureView` に描く。O-6 |
+| `AvatarContrast` | Android | 照度の補正（`contrastStrength`）から作る `ColorMatrix`。静止画の `Paint` と動画レイヤーの両方に同じものを使う。O-6 |
 
 変更する既存コード（影響を最小に）:
 
@@ -465,7 +467,7 @@ stateDiagram-v2
 - **半二重。** マイクを止めてから応答を待ち、再生中はマイクを開かない。内蔵スピーカーの音を拾って自分の返答を認識するのを避ける。
 - **DONE の条件:** 音声つきなら再生完了または再生失敗、`audio:null` ならテキスト表示の時点。`done` イベントは SSE の終了であり、再生完了とは別。**連続会話（R19）は DONE から直接 LISTENING に戻さず、新しいセッションを作る**（初版には入れない）。
 - 画面の表示名: IDLE「待機中」、LISTENING/HEARING「聞き取り中」、WAITING「応答待ち」、REPLYING「返答中」、ERROR「エラー」。
-- アバターのポーズ（仮の対応。名前は #97 の語彙に合わせる、O-6）: IDLE → `idle`、LISTENING/HEARING → `listening`、WAITING → `working`（#97 の例示にある名前）、REPLYING → `talking`、ERROR → `idle`＋吹き出し。通知表示中は `daidai.avatar_pose` があればそれを使う。未知のポーズ名は `idle`。
+- アバターのポーズ（O-6 で決定済み）: 語彙は `idle / listening / working / talking / milestone / making` の 6 つ。IDLE → `idle`、LISTENING/HEARING → `listening`、WAITING → `working`、REPLYING → `talking`、ERROR → `idle`＋吹き出し。通知表示中（待機中でカードを出している間）は `daidai.avatar_pose` があればそれを使い、`milestone` / `making` も `idle` に読み替えずそのまま出す。未知のポーズ名は `idle`。未設定・権限なしの案内の間も `idle`。
 - ERROR は B に留まる。表示を数秒（既定 8 秒）出し、IDLE に戻る。エラー表示のタップで再試行（新しいセッション）。右スワイプで A に戻れる（常に）。`daidai_idle_seconds` が過ぎれば A に戻る。
 - 利用者向けのエラー文言はコードの固定表から `code` で引く（ホストの `message` は診断の 1 行にだけ出す）。コード: `not_configured`, `mic_permission`, `mic_unavailable`, `mic_silent`, `host_unreachable`, `no_speech`, `asr_failed`, `timeout`, `daidai_unavailable`, `reply_audio_failed`, `session_lost`, `expired`, `busy`, `asr_unavailable`。
 - **マイク使用中の表示は `AudioRecord.recordingState == RECORDSTATE_RECORDING` に連動させる**（セッション状態ではなく、実際の録音状態）。Android 11 には OS のマイクインジケータがない。
@@ -641,7 +643,7 @@ stateDiagram-v2
 | O-3 | 返答後に続けて話す方法（連続会話、R19） | 初版は入れない（1 入場 1 往復）。入れる場合は (a) 返答後に自動で再聞き取り（往復 3 回・総時間の上限、`no_speech` で必ず待機）、(b) アバターのタップで再開、(c) いったん A に出て戻る。いずれも新しいセッションを作る |
 | O-4 | 転送方式 | T1（HTTP + SSE、Panel の希望）か T2（WebSocket、OkHttp 依存を足す）。ホスト側 Issue が決める。決まるまで Panel は interface の裏に置く |
 | O-5 | 返答の長さと待ち時間 | 返答は 2,000 文字で切り詰め、スクロールは今回やらない。`reply_timeout_s` の既定 45 秒は仮で、だいだいの応答時間を実測してから決める。（ブリッジのトークンは panel と別にすると**決定済み**。流用案は安全面のレビューで却下） |
-| O-6 | アバターのポーズ名と画像の置き場 | #97 の `avatar_pose` の語彙は未確定（例示は idle / working）。推奨: Panel が必要とするのは `idle / listening / working / talking` の 4 つ。#97 と名前を合わせる。画像は APK 同梱（オフラインで動く）。ホスト取得はポーズ追加が楽だが、依存が増える |
+| O-6 | アバターのポーズ名と画像の置き場 | **決定済み（2026-11-15、利用者判断）。** ① ポーズは `idle / listening / working / talking / milestone / making` の 6 つ。`listening` と `talking` は新しい絵、ほかの 4 つは本体 miharashi と同じ絵。② `milestone` / `making` も Panel が持ち、`idle` に読み替えない（本体の `avatar_pose` と揃える）。ポーズの決め方（§5.5）は変えない。③ 本体と同じ角丸カード枠: 正方形の絵（背景は白く不透明）の四隅を、表示した絵の短い辺の 14% の半径で切り抜くだけ。背景の切り抜きはしない。④ 照度の補正（`contrastStrength`）を静止画にも動画にも効かせる（コントラストを 1.0→1.25 まで、中間灰 127.5 を中心に上げる ColorMatrix。強さ 0 は補正なし）。実装（Issue #18）: 素材は APK の `assets/daidai/` に同梱（`daidai-<pose>.png` 480×480、`daidai-<pose>.mp4` 720×720・H.264・24 fps・音声なし）。静止画（PNG）を `DaidaiView.onDraw` で常に描き、その上に動画（子の `TextureView`、`MediaPlayer` 1 つ、繰り返し・消音）を重ねる。ポーズが変わったら動画を alpha 0 で隠し（INVISIBLE にしない。SurfaceTexture が作られない・壊れることがあるため）、新しいポーズを先頭から開いて、最初のフレームが描かれてから見せる。開けない・デコードできないポーズは覚えて、動いている間は開き直さず静止画のままにする。B が見えない間・待機時計・背面はデコードしない（プレイヤーを解放）。「B が見えている」は `PageController.bVisible` ではなく、`PagerLayout` が B に設定する実際の表示状態（`DaidaiView` の `visibility == VISIBLE`）で判断する（A から右へ引いた間は `bVisible` が true でも B は見えない）。フォールバックの段は 動画 → 静止画 → 仮のドット絵（PNG が読めないとき）。ホスト取得は依存が増えるので採らない |
 | O-7 | ゲートの閾値を既存の `dark_lux` と共有するか | 推奨: 別キー（既定値は同じ 1 lx / 30 秒）。共有のほうが設定は減るが、消灯の調整が自動切替に波及する |
 | O-8 | 将来の在席信号が入ったときの合成規則 | 今回は照度のみ（`CompositePresenceGate` は実装しない）。合成の既定案（どれかが ABSENT なら ABSENT）は、信号が決まってから |
 | O-9 | ゲートで見送った通知の再評価（R18） | 推奨: 初期実装では行わない（Issue の「ゲートを通らない通知では切り替えない」に忠実）。やる場合は有効期間（例 10 分）を決める |

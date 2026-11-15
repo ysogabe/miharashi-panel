@@ -6,8 +6,10 @@ object DaidaiPose {
     const val LISTENING = "listening"
     const val WORKING = "working"
     const val TALKING = "talking"
+    const val MILESTONE = "milestone"
+    const val MAKING = "making"
 
-    val ALL = listOf(IDLE, LISTENING, WORKING, TALKING)
+    val ALL = listOf(IDLE, LISTENING, WORKING, TALKING, MILESTONE, MAKING)
 
     /** 語彙にない名前(null・空・大文字小文字違いを含む)は `idle`。 */
     fun normalize(name: String?): String = if (name != null && name in ALL) name else IDLE

@@ -4,30 +4,142 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.SurfaceTexture
 import android.graphics.Typeface
 import android.view.MotionEvent
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewOutlineProvider
+import android.widget.FrameLayout
 
 /**
- * 画面 B(だいだい連携画面)の描画(設計書 §5.6)。View と Canvas だけで描く。
+ * 画面 B(だいだい連携画面)の描画(設計書 §5.6)。文字や図形は Canvas で描き、アバターの動画だけ子の `TextureView` に任せる。
  * [render] で受けた [DaidaiUiState] を描くだけで、マイクも通信も扱わない。呼び出しは UI スレッドから。
  * 色は操作盤(A)の配色トークンと、照度による色補正(`contrastStrength`)に従う。
+ *
+ * アバターは、静止画(assets の PNG。なければ仮のドット絵)を `onDraw` で常に描き、その上にポーズの動画
+ * (子の `TextureView`、[AvatarVideo] が再生を決める)を重ねる。動画は最初のフレームが出るまで隠し、
+ * 開けないときは静止画のまま。静止画も動画も同じ角丸と、同じ照度の補正([AvatarContrast])を受ける。
  * テキストは常にプレーンに描き(HTML として解釈しない)、制御文字などは描画前にも除く。
  */
 @SuppressLint("ViewConstructor")
-class DaidaiView(context: Context, private val avatars: AvatarAssets = AvatarAssets()) : View(context) {
+class DaidaiView(
+    context: Context,
+    private val avatars: AvatarAssets = AvatarAssets.fromAssets(context.assets),
+    videoPlayers: VideoPlayerFactory = VideoPlayerFactory { MediaPlayerVideoPlayer(context.assets) },
+) : FrameLayout(context) {
     /** 照度による色補正。`PanelView.contrastStrength` と同じ値を受け取る */
     var contrastStrength = 0f
         set(value) {
-            val next = if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+            val next = AvatarContrast.clamp(value)
             if (field == next) return
             field = next
+            applyVideoContrast()
             invalidate()
         }
+
+    /**
+     * アバターの動画を動かしてよいか(前面で、待機時計でない、と呼び出し側が判断したもの)。
+     * 実際にデコードするのは、これが true で、かつこの View が実際に見えている(`visibility == VISIBLE`)ときだけ。
+     * PagerLayout は B が画面に出ている間だけ B を VISIBLE にするので、B を引き始めただけで見えていない間
+     * (A から右へ引く、端を引っ張る)も、デコードしない。静止画は常に出る。
+     */
+    var videoActive = false
+        set(value) {
+            if (field == value) return
+            field = value
+            syncVideo()
+        }
+
+    /** 動画を今動かしている(開いてよい)か(テスト用) */
+    internal val videoRunning get() = videoActive && visibility == VISIBLE
+
+    private fun syncVideo() = video.setActive(videoRunning)
+
+    /**
+     * PagerLayout が B の visibility を直接切り替えるので、ここで受ける(`onVisibilityChanged` は窓に付く前は呼ばれない)。
+     * 親の表示切替は見ない。自分の `visibility` だけで判断する。
+     */
+    override fun setVisibility(visibility: Int) {
+        super.setVisibility(visibility)
+        // View の生成途中(`video` の初期化前)に呼ばれても何もしない
+        if (videoReady) syncVideo()
+    }
+
+    // 動画レイヤー。隠すのは INVISIBLE ではなく alpha = 0: INVISIBLE の TextureView は描かれず、SurfaceTexture が
+    // 作られない(作られても壊される)ことがあり、動画を開けなくなる。alpha 0 なら surface は生きたまま、見えないだけ。
+    internal val videoLayer = TextureView(context).apply {
+        alpha = 0f
+        isClickable = false
+        isFocusable = false
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, AvatarFrame.cornerRadius(minOf(view.width, view.height).toFloat()))
+            }
+        }
+        clipToOutline = true
+    }
+
+    /** 動画レイヤーに渡している補正のペイント(テストで補正の有無を見る) */
+    internal var videoLayerPaint = Paint()
+        private set
+
+    private val video = AvatarVideo(videoPlayers, { videoLayer.alpha = if (it) 1f else 0f })
+    private var videoReady = false
+
+    init {
+        videoReady = true
+        setWillNotDraw(false)
+        addView(videoLayer, LayoutParams(0, 0))
+        videoLayer.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) = video.onSurfaceAvailable(Surface(st))
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                video.onSurfaceDestroyed()
+                return true
+            }
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        applyVideoContrast()
+    }
+
+    private fun applyVideoContrast() {
+        // `setLayerPaint` は同じ Paint のインスタンスだと何もしないので、変えるたびに新しい Paint を渡す(すぐ反映させる)
+        videoLayerPaint = Paint().apply { colorFilter = AvatarContrast.filter(contrastStrength) }
+        videoLayer.setLayerPaint(videoLayerPaint)
+    }
+
+    /** 動画レイヤーが今見えているか(テスト用) */
+    internal val videoVisible get() = videoLayer.alpha > 0f
+
+    override fun onDetachedFromWindow() {
+        video.release()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        setMeasuredDimension(getDefaultSize(suggestedMinimumWidth, widthMeasureSpec), getDefaultSize(suggestedMinimumHeight, heightMeasureSpec))
+    }
+
+    /** 動画レイヤーは、静止画のアバター(`DaidaiLayout.avatar`)と同じ位置・大きさ */
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0 || h <= 0) return
+        val a = DaidaiLayout(w.toFloat(), h.toFloat(), false).avatar
+        val l = Math.round(a.left)
+        val t = Math.round(a.top)
+        val size = maxOf(Math.round(minOf(a.width, a.height)), 0)
+        videoLayer.measure(MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY))
+        videoLayer.layout(l, t, l + size, t + size)
+        videoLayer.invalidateOutline()
+    }
 
     /** 今描いている状態(テスト用に読み取りだけ公開) */
     var uiState = DaidaiUiState()
@@ -45,8 +157,12 @@ class DaidaiView(context: Context, private val avatars: AvatarAssets = AvatarAss
         if (state == uiState) return
         uiState = state
         prepared = prepare(state)
+        video.setPose(displayPose(state))
         invalidate()
     }
+
+    /** 今描くアバターのポーズ。案内の表示中は idle */
+    private fun displayPose(s: DaidaiUiState) = if (s.guide == SetupGuide.NONE) s.avatarPose else DaidaiPose.IDLE
 
     private fun prepare(s: DaidaiUiState) = Prepared(
         title = DaidaiText.clean(s.notice?.title, DaidaiInfo.MAX_TITLE, keepNewlines = false),
@@ -91,7 +207,7 @@ class DaidaiView(context: Context, private val avatars: AvatarAssets = AvatarAss
         val lay = layoutFor(hasCard = guide == SetupGuide.NONE && s.notice != null)
         c.drawColor(BG)
         drawHeader(c, lay, s)
-        avatars.draw(c, if (guide == SetupGuide.NONE) s.avatarPose else DaidaiPose.IDLE, lay.avatar, avatarColors())
+        avatars.draw(c, displayPose(s), lay.avatar, avatarColors())
         if (guide != SetupGuide.NONE) {
             drawGuide(c, lay, guide)
             return
@@ -102,7 +218,7 @@ class DaidaiView(context: Context, private val avatars: AvatarAssets = AvatarAss
     }
 
     private fun avatarColors() = AvatarColors(
-        face = PanelView.ACCENT, feature = contrastColor(PanelView.BASE_BG, Color.BLACK), mark = WARN)
+        face = PanelView.ACCENT, feature = contrastColor(PanelView.BASE_BG, Color.BLACK), mark = WARN, contrast = contrastStrength)
 
     // ---- ヘッダー: 左に「だいだい」、右にマイク使用中(A のヘッダーと同じ矩形・帯の色)
 
