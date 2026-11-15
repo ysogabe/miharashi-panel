@@ -19,7 +19,7 @@ import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
 
 /**
- * 画面 B(だいだい連携画面)の描画(設計書 §5.6)。View と Canvas だけで描く。
+ * 画面 B(だいだい連携画面)の描画(設計書 §5.6)。文字や図形は Canvas で描き、アバターの動画だけ子の `TextureView` に任せる。
  * [render] で受けた [DaidaiUiState] を描くだけで、マイクも通信も扱わない。呼び出しは UI スレッドから。
  * 色は操作盤(A)の配色トークンと、照度による色補正(`contrastStrength`)に従う。
  *
@@ -70,7 +70,8 @@ class DaidaiView(
     }
 
     /** 動画レイヤーに渡している補正のペイント(テストで補正の有無を見る) */
-    internal val videoLayerPaint = Paint()
+    internal var videoLayerPaint = Paint()
+        private set
 
     private val video = AvatarVideo(videoPlayers, { videoLayer.alpha = if (it) 1f else 0f })
 
@@ -90,7 +91,8 @@ class DaidaiView(
     }
 
     private fun applyVideoContrast() {
-        videoLayerPaint.colorFilter = AvatarContrast.filter(contrastStrength)
+        // `setLayerPaint` は同じ Paint のインスタンスだと何もしないので、変えるたびに新しい Paint を渡す(すぐ反映させる)
+        videoLayerPaint = Paint().apply { colorFilter = AvatarContrast.filter(contrastStrength) }
         videoLayer.setLayerPaint(videoLayerPaint)
     }
 
