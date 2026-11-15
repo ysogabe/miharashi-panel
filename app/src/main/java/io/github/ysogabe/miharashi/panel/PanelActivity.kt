@@ -145,7 +145,7 @@ class PanelActivity : Activity() {
 
     /** アバターの動画は、B が見えていて、前面で、待機時計でないときだけデコードする */
     private fun updateAvatarVideo() {
-        daidaiView.videoActive = bVisible && active && !sleeping
+        daidaiView.videoActive = bVisible && active && !sleeping // 実際に見えているかは DaidaiView が自分の visibility で見る
     }
 
     override fun onResume() {

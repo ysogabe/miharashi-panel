@@ -45,15 +45,32 @@ class DaidaiView(
         }
 
     /**
-     * アバターの動画を動かしてよいか(B が見えていて、前面で、待機時計でない)。false の間は動画をデコードしない。
-     * 静止画は常に出る。
+     * アバターの動画を動かしてよいか(前面で、待機時計でない、と呼び出し側が判断したもの)。
+     * 実際にデコードするのは、これが true で、かつこの View が実際に見えている(`visibility == VISIBLE`)ときだけ。
+     * PagerLayout は B が画面に出ている間だけ B を VISIBLE にするので、B を引き始めただけで見えていない間
+     * (A から右へ引く、端を引っ張る)も、デコードしない。静止画は常に出る。
      */
     var videoActive = false
         set(value) {
             if (field == value) return
             field = value
-            video.setActive(value)
+            syncVideo()
         }
+
+    /** 動画を今動かしている(開いてよい)か(テスト用) */
+    internal val videoRunning get() = videoActive && visibility == VISIBLE
+
+    private fun syncVideo() = video.setActive(videoRunning)
+
+    /**
+     * PagerLayout が B の visibility を直接切り替えるので、ここで受ける(`onVisibilityChanged` は窓に付く前は呼ばれない)。
+     * 親の表示切替は見ない。自分の `visibility` だけで判断する。
+     */
+    override fun setVisibility(visibility: Int) {
+        super.setVisibility(visibility)
+        // View の生成途中(`video` の初期化前)に呼ばれても何もしない
+        if (videoReady) syncVideo()
+    }
 
     // 動画レイヤー。隠すのは INVISIBLE ではなく alpha = 0: INVISIBLE の TextureView は描かれず、SurfaceTexture が
     // 作られない(作られても壊される)ことがあり、動画を開けなくなる。alpha 0 なら surface は生きたまま、見えないだけ。
@@ -74,8 +91,10 @@ class DaidaiView(
         private set
 
     private val video = AvatarVideo(videoPlayers, { videoLayer.alpha = if (it) 1f else 0f })
+    private var videoReady = false
 
     init {
+        videoReady = true
         setWillNotDraw(false)
         addView(videoLayer, LayoutParams(0, 0))
         videoLayer.surfaceTextureListener = object : TextureView.SurfaceTextureListener {

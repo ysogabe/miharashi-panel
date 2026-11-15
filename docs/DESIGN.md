@@ -161,7 +161,7 @@ A と B の 2 画面を、`PagerLayout` に横に並べます。左へスワイ�
 
 - 静止画は `DaidaiView.onDraw` が常に描きます。動画は子の `TextureView`(`MediaPlayer` 1 つ、繰り返し・消音)で、静止画の上に重ねます。
 - ポーズが変わると動画を `alpha = 0` で隠し、新しいポーズを開き直して、最初のフレームが描かれてから見せます。開けない・デコードできないポーズは、動いている間は開き直さず、静止画のままにします。
-- B が見えない間、待機時計、背面ではデコードしません(`PanelActivity` が `videoActive` で伝えます)。
+- B が見えない間、待機時計、背面ではデコードしません。前面で待機時計でないかは `PanelActivity` が `videoActive` で伝え、B が実際に見えているかは `DaidaiView` が自分の `visibility` で見ます(`PagerLayout` が B を画面に出している間だけ VISIBLE にします)。A から右へ引いた間は `PageController.bVisible` が true でも B は INVISIBLE のままなので、動画は開きません。
 - 動画 → 静止画 → 仮のドット絵(PNG が読めないとき)の順に落とします。
 - 照度の補正(`contrastStrength`)は、静止画と動画の両方に同じ `ColorMatrix` でかけます(コントラスト 1.0→1.25、中間灰を中心に)。強さ 0 は補正なしです。
 

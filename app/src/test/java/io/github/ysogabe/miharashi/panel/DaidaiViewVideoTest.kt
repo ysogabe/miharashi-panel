@@ -171,4 +171,67 @@ class DaidaiViewVideoTest {
         send(MotionEvent.ACTION_UP, 50)
         assertEquals(2, taps)
     }
+
+    /** B の動画の結線を、実際の PagerLayout と PageController で再現する(PanelActivity と同じ式) */
+    private inner class PagerRig {
+        var now = 10_000L
+        val view = newView()
+        val controller = PageController(60_000)
+        val pager = PagerLayout(ctx, android.view.View(ctx), view, controller, monotonicMs = { now })
+        private var downTime = 0L
+
+        init {
+            controller.addListener(object : PageListener {
+                override fun onBVisibleChanged(visible: Boolean) { view.videoActive = visible }
+            })
+            pager.measure(android.view.View.MeasureSpec.makeMeasureSpec(960, android.view.View.MeasureSpec.EXACTLY), android.view.View.MeasureSpec.makeMeasureSpec(480, android.view.View.MeasureSpec.EXACTLY))
+            pager.layout(0, 0, 960, 480)
+            view.surfaceAvailable()
+        }
+
+        private fun send(action: Int, x: Float) {
+            val e = MotionEvent.obtain(downTime, now, action, x, 240f, 0)
+            pager.dispatchTouchEvent(e)
+            e.recycle()
+        }
+        fun down(x: Float) { downTime = now; send(MotionEvent.ACTION_DOWN, x) }
+        fun move(x: Float) { now += 16; send(MotionEvent.ACTION_MOVE, x) }
+        fun up(x: Float) { now += 16; send(MotionEvent.ACTION_UP, x) }
+        fun settle() { now += PagerLayout.ANIMATION_MS; pager.stepAnimation() }
+        fun drag(x0: Float, x1: Float) { down(x0); for (i in 1..8) move(x0 + (x1 - x0) * i / 8) }
+    }
+
+    @Test fun noVideoIsOpenedWhileBIsDraggedButStillOutOfSight() {
+        val r = PagerRig()
+        // B へ入る: 見えるので開く
+        r.drag(800f, 300f)
+        assertTrue(r.controller.bVisible)
+        assertEquals(android.view.View.VISIBLE, r.view.visibility)
+        assertTrue(r.view.videoRunning)
+        r.up(300f); r.settle()
+        assertEquals(1, players.created.size)
+        // A に戻る: 解放して止める
+        r.drag(300f, 800f); r.up(800f); r.settle()
+        assertEquals(Page.A, r.controller.settledPage)
+        assertTrue(players.last.released)
+        val opened = players.created.size
+        // A を右へ引いて保持: PageController は bVisible だが B は INVISIBLE のまま。プレイヤーを開かない
+        r.drag(100f, 600f)
+        assertTrue("引いている間も bVisible", r.controller.bVisible)
+        assertEquals(android.view.View.INVISIBLE, r.view.visibility)
+        assertTrue(r.view.videoActive)
+        assertFalse(r.view.videoRunning)
+        assertEquals("見えない B の動画を開かない", opened, players.created.size)
+        r.up(600f); r.settle()
+        assertEquals(opened, players.created.size)
+        // もう一度 B へ引いて見えたら開く(離す前でも)
+        r.drag(800f, 600f)
+        assertEquals(android.view.View.VISIBLE, r.view.visibility)
+        assertTrue(r.view.videoRunning)
+        assertEquals(opened + 1, players.created.size)
+        // B が見えなくなったら(A へ戻り切ったら)また解放する
+        r.drag(600f, 900f); r.up(900f); r.settle()
+        assertEquals(android.view.View.INVISIBLE, r.view.visibility)
+        assertTrue(players.last.released)
+    }
 }

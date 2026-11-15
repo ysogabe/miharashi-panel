@@ -91,8 +91,10 @@ class PanelActivityPagesTest {
             assertFalse("A の間はデコードしない", f.daidai.videoActive)
             f.toB()
             assertTrue(f.daidai.videoActive)
+            assertTrue("B が見えている", f.daidai.videoRunning)
             f.swipe(0.1f, 0.8f); idle(400)
             assertFalse("A に戻ったら止める", f.daidai.videoActive)
+            assertFalse(f.daidai.videoRunning)
             f.toB()
             assertTrue(f.daidai.videoActive)
             f.controller.pause() // 背面: onPause は A に戻し、動画も止める
