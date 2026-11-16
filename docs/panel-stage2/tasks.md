@@ -26,6 +26,7 @@
 - 最終確認(331bf8a、clean ビルド): `testDebugUnitTest` 1038 件のうち、既存の不安定な `BridgeClientTest.slowAudioDownloadIsCutByTheOverallDeadline` だけが 1 回落ちた(そのクラスを 3 回流して 3 回通過。変更前の main d206a3f でも単独で 6 回中 5 回落ちる)。ほかは失敗 0。`assembleDebug` 成功。`scripts/test-install.sh` 332 件成功(scripts は変更なし)。
 - PRD 突き合わせ(Sol): 必須なし。AC1〜AC6 は満たす(AC3 は Panel の範囲。新ホストの panelsim はホスト側)、AC14 は実機で未確認。推奨 2(USAGE の「必ず音が鳴る」と「会話が終わると捨てる」が実装より強い保証)→ 9740946 で文言を直した。T1 で見送った指摘を再掲する根拠は無いとの判断。
 - セキュリティ(Opus、`security-review`、331bf8a): `PREFLIGHT OK`、High/Medium とも指摘なし。
+- 全件の再実行(aef4708): 1 回目は同じ不安定な 1 件だけ落ち、2 回目は 1038 件すべて通過(失敗 0)。
 - T1 の見送り 1 件(作成の取消の窓)は、ユーザーの確認待ち。AC3 の「送る前の取消で作成 0 回」は、「送る前」を本文の直前の照合より前と読む解釈での判定。
 - USAGE の手直し(9740946)の 2 文は、yomiyasu で推敲した(lint 候補 0、diff の意味が変わる恐れ 0)。
 
