@@ -189,12 +189,12 @@ KioskSync(status / SSE) → DaidaiController → NoticeTracker → AutoSwitchPol
 
 | 部品 | 役割 |
 |---|---|
-| `DaidaiVoice` | B の確定とマイクの結線。マイクを開く条件は「ブリッジが設定済みで、B が確定して表示中」だけ。離れる・背面・待機・消灯・設定画面で必ず止める |
-| `VoiceSession` | 1 回の会話の状態機械(`PREPARING`→`LISTENING`→`HEARING`→`WAITING`→`REPLYING`→`DONE`)。単一スレッド、世代番号、状態は後退しない、各段階の期限 |
+| `DaidaiVoice` | B の確定とマイクの結線。マイクを開く条件は「ブリッジが設定済みで、B が確定して表示中」だけ。離れる・背面・待機・消灯・設定画面で必ず止める。返答のあとに続けて聞く「会話」(最大 5 往復・5 分、続きの待ち 6 秒)も持つ。往復ごとに新しいセッションを作り、会話の世代で古い通知を捨てる([設計書 §5.5.1](daidai-screen/design.md)) |
+| `VoiceSession` | 1 往復の状態機械(`PREPARING`→`LISTENING`→`HEARING`→`WAITING`→`REPLYING`→`DONE`)。単一スレッド、世代番号、状態は後退しない、各段階の期限 |
 | `BridgeClient` | ブリッジとの HTTP + SSE。URL は固定のパスから自分で組み、応答のパスは使わない。リダイレクトに追従しない。`Last-Event-ID` で再生、同じ seq の再送は冪等 |
 | `MicAudioSource` | `AudioRecord`(16 kHz モノラル PCM16)。メモリのキューだけで、ファイルに書かない |
 | `WavPlayer` / `WavValidator` | 返答の WAV をメモリ上で検証して `AudioTrack` で再生する。ファイルに書かない |
-| `StartTone` | マイクを開くときの短い開始音 |
+| `StartTone` | マイクを開くときの短い開始音。続きの往復は別の音(DTMF の「1」、100 ms) |
 | `BridgeHealth` | 設定画面の接続テスト(`GET /v1/health`) |
 
 ブリッジの要求仕様(エンドポイント、エラー、冪等、期限)は [設計書 §5.2](daidai-screen/design.md) です。Panel 側の絶対上限は同 §5.8 にあり、ホストの値では超えられません。
