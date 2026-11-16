@@ -38,6 +38,8 @@ enum class VoicePhase {
  * 許可は **[start] / [retry] を呼んだスレッドで同期に**控え、[doStart] に渡す(キューに積まれたあとの値ではない)。[doStart] は、控えた値が現在と違えば
  * (呼び出しのあとに [cancel] / [stopMicNow] / close が来た)何もしない(作成 0 回・状態も変えない)。違わなければそれを `openPermit` にする。
  * したがって `start → cancel` の順は作成 0 回、`cancel → start` の順は今までどおり作成 1 回。
+ * 作成をワーカーに積んだあと、ワーカーが実際に呼ぶまでの間に来た取消も、ワーカーの呼び出しの**直前**の同じ照合で止める(作成の要求を送らず、結果は黙って捨てる)。
+ * 照合を通ったあとに来た取消だけが小さな窓として残り、それは `abortInFlight` の世代と、遅れた 201 の後始末(S7)で回収する。
  *
  * ## 往復(段階 2a-P)
  * 1 つの [VoiceSession] は 1 往復(= 1 セッション)を受け持ち、続きの往復は呼ぶ側が新しい [start] で作る(状態は後退しない。DONE から LISTENING に戻さない)。
@@ -223,7 +225,12 @@ class VoiceSession(
         arm(Timer.CREATE, VoiceLimits.CREATE_TIMEOUT_MS) { fail(VoiceErrorCode.HOST_UNREACHABLE, "create timeout") }
         emit()
         val req = SessionRequest(clientId, appVersion, reason, noticeId, noSpeechS = request.noSpeechS, conversation = request.conversation)
-        runBlocking({ bridge.createSession(req) }) { r -> onCreated(g, r) }
+        // ワーカーで実際に呼ぶ直前に、控えた許可を照合する(積んだあとに来た取消は、作成の要求を送る前に止める)。
+        // 照合を通ったあとに来た取消は、finish の abortInFlight と、遅れて届く 201 の後始末(S7: DELETE と会話の終わり)が回収する
+        runBlocking({
+            if (micPermit.get() != permit) throw CreateCancelledException()
+            bridge.createSession(req)
+        }) { r -> onCreated(g, r) }
     }
 
     private fun doCancel() {
@@ -344,6 +351,11 @@ class VoiceSession(
     // 作成とマイク
 
     private fun onCreated(g: Int, r: Result<SessionInfo>) {
+        if (r.exceptionOrNull() is CreateCancelledException) {
+            // 作成の要求を出す前に取消が来ていた。エラーにしない。まだこの世代なら取消として終える(古い世代なら取消の finish が済んでいる)
+            if (g == gen && _phase == VoicePhase.PREPARING) cancelledToIdle()
+            return
+        }
         val info = r.getOrNull()
         if (g != gen || _phase != VoicePhase.PREPARING) {
             // S7: 離脱したあとに作成が成功して届いた。録音せず、直ちに DELETE(id が正しい形のときだけ)。
@@ -864,6 +876,9 @@ class VoiceSession(
         }
         return if (n == 0) 0.0 else sqrt(sum / n)
     }
+
+    /** ワーカーが作成を呼ぶ直前に、開始の許可が取り消されていた(作成の要求は送っていない)。ハンドル・本文は持たない */
+    private class CreateCancelledException : Exception("create cancelled")
 
     companion object {
         const val DEFAULT_CLIENT_ID = "echo-show-5"

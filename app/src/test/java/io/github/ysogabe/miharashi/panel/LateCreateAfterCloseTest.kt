@@ -64,8 +64,12 @@ class LateCreateAfterCloseTest {
     private class LocalBridge : BridgeApi {
         val creates = mutableListOf<SessionRequest>()
         val cancels = mutableListOf<String>()
+
+        /** 作成の要求を送った直後(応答が戻る前)に走らせる処理。「通信中に close が来る」並びの再現 */
+        var duringCreate: (() -> Unit)? = null
         override fun createSession(req: SessionRequest): SessionInfo {
             creates += req
+            duringCreate?.invoke()
             return SessionInfo("s-${creates.size}")
         }
 
@@ -103,13 +107,17 @@ class LateCreateAfterCloseTest {
     @Test fun aCreateThatSucceedsAfterTheRuntimeIsClosedIsDeletedByTheWorkerEvenThoughTheDeliveryIsDropped() {
         val r = Rig(wrap = true)
         r.session.start(StartReason.SWIPE, null, false)
-        r.sim.settle() // doStart: 作成の通信が走り始める(まだ戻らない)
+        r.sim.settle() // doStart: 作成の呼び出しをワーカーに積む(まだ実行しない)
         assertEquals(VoicePhase.PREPARING, r.session.phase)
-        r.close()
-        r.sim.settle() // doCancel と、ループの終了
-        assertTrue(r.gated.terminated)
+        // 作成の要求を送ったあと、応答が戻る前に close が完了する(作成の直前の許可の照合は、close より先に通っている)
+        r.local.duringCreate = {
+            r.close()
+            r.sim.settle() // doCancel と、ループの終了
+            assertTrue(r.gated.terminated)
+        }
         r.worker.runPending() // 遅れて作成が成功して戻る → 配送は捨てられる
         r.sim.settle()
+        assertEquals("作成の要求は送られた", 1, r.local.creates.size)
         assertEquals("配送は捨てられた", 1, r.gated.dropped)
         assertEquals("通信のスレッドで、その場で DELETE", listOf("s-1"), r.local.cancels)
         assertEquals("マイクは開かない", 0, r.audio.startCount)

@@ -207,8 +207,26 @@ class FakeWorker(private val sim: Sim, private val bridge: FakeBridge) : Session
     /** 応答なし(遅延 null)で止まっている呼び出しの数 */
     val heldCount: Int get() = inflight.count { it.timer == null }
 
-    @Suppress("UNCHECKED_CAST")
+    /** true の間、`run` は呼び出しを実行せずに積む([runHeld] で 1 つずつ実行する。ワーカースレッドの実行の遅れの再現) */
+    var holdCalls = false
+    private val held = ArrayDeque<() -> Unit>()
+
+    /** 積まれたまま未実行の呼び出しの数 */
+    val heldCallCount: Int get() = held.size
+
+    /** 積まれた呼び出しを古い順に 1 つ実行する(実行したら true) */
+    fun runHeld(): Boolean {
+        val task = held.removeFirstOrNull() ?: return false
+        task()
+        return true
+    }
+
     override fun <T> run(call: () -> T, deliver: (Result<T>) -> Unit) {
+        if (holdCalls) held.addLast { execute(call, deliver) } else execute(call, deliver)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> execute(call: () -> T, deliver: (Result<T>) -> Unit) {
         val p = Pending(deliver as (Result<Any?>) -> Unit)
         bridge.currentPending = p
         bridge.info = CallInfo(0L, true)
