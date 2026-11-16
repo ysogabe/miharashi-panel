@@ -94,8 +94,12 @@ class DaidaiVoice(
     private val echoWaitMs: Long = ECHO_WAIT_MS,
 ) : DaidaiEntryListener, PageListener {
     private var runtime: VoiceRuntime? = null
+    private var runtimeListener: Listener? = null
     private var runtimeKey: Pair<String, String>? = null
     private var runtimeId = 0
+
+    /** 会話の終わりをホストへ送った(runtime に頼んだ)ハンドル。新しい 16 件だけ持ち、同じハンドルを 2 回頼まない(ホストへの重複は [DeleteOnCloseBridge] も抑える) */
+    private val endedHandles = LinkedHashSet<String>()
 
     private var pendingEntry: DaidaiEntry? = null
     private var debounce: Cancelable? = null
@@ -259,6 +263,9 @@ class DaidaiVoice(
         if (snapshot?.state != VoiceState.ERROR) return
         if (pages.settledPage != Page.B || pages.userBusy) return
         if (!settings().isConfigured()) return
+        // 直前のタップの再試行が、まだ始まった(進行中のスナップショットが届いた)ことを確かめられていない間の 2 回目のタップ。
+        // 二重に新しい会話を作ると、進行中の往復の印と今の会話の世代が食い違い、会話が終わらなくなる
+        conversation?.let { if (it.origin == Origin.RETRY && !it.sawActive) return }
         val reason = lastReason ?: return
         // 再試行は利用者の操作で、**新しい会話**にする(世代を進め、`conversation: {}` から)。autoStarted = false なので、
         // 自動切替の歯止めには数えず、照度が取れなくても続く(S2-U9)。ホストへの reason と notice_id は直前の会話の値のまま
@@ -301,6 +308,9 @@ class DaidaiVoice(
     private fun disposeRuntime() {
         val rt = runtime ?: return
         endConversation() // 会話の終わりの通知を close より前に積む(executor の shutdown の前)
+        // 201 を受け取ったがメインへの通知がまだ処理されていないハンドル(作り直し・背面の直前の競合)も、close より前に終わらせる
+        runtimeListener?.seenHandles()?.forEach { sendEnd(rt, it) }
+        runtimeListener = null
         runtime = null
         runtimeKey = null
         runtimeId++ // 古いセッションの遅れた通知を捨てる
@@ -316,8 +326,9 @@ class DaidaiVoice(
         if (runtime != null && runtimeKey == key) return runtime
         disposeRuntime()
         val id = ++runtimeId
+        val listener = Listener(id)
         return try {
-            factory.create(s, Listener(id)).also { runtime = it; runtimeKey = key }
+            factory.create(s, listener).also { runtime = it; runtimeListener = listener; runtimeKey = key }
         } catch (_: Exception) {
             null // 作れなければマイクは開かない(例外のメッセージは持ち出さない)
         }
@@ -339,9 +350,16 @@ class DaidaiVoice(
         c.follow?.cancel()
         c.follow = null
         conversationGen++
-        c.handle?.let { runtime?.endConversation(it) }
+        c.handle?.let { sendEnd(runtime, it) }
         if (limited && c.autoStarted) policy.onAutoConversationLimited()
         updateSessionActive()
+    }
+
+    /** ハンドルの会話の終わりを runtime に頼む(同じハンドルは 1 回だけ)。ノンブロッキング */
+    private fun sendEnd(rt: VoiceRuntime?, handle: String) {
+        if (rt == null || !endedHandles.add(handle)) return
+        if (endedHandles.size > ENDED_HANDLES_MAX) endedHandles.remove(endedHandles.first())
+        rt.endConversation(handle)
     }
 
     /** B の無操作タイマーを止める条件: セッションが進行中、または会話が続いている(往復の間の待ちも含む) */
@@ -355,13 +373,13 @@ class DaidaiVoice(
         if (c == null || c.gen != tag.conversationGen) {
             // 取消のあとに届いた古い世代の 201。今の会話のハンドルは上書きせず、そのハンドルだけ終わらせる(重複は DeleteOnCloseBridge が抑える)
             val h = info.handle ?: return
-            if (c?.handle != h) runtime?.endConversation(h)
+            if (c?.handle != h) sendEnd(runtime, h)
             return
         }
         val h = info.handle
         if (h != null) {
             val old = c.handle
-            if (old != null && old != h) runtime?.endConversation(old) // ホストが別のハンドルを返した: 新しい方を使い、古い方は終わらせる
+            if (old != null && old != h) sendEnd(runtime, old) // ホストが別のハンドルを返した: 新しい方を使い、古い方は終わらせる
             c.handle = h
         }
         if (!info.continueAllowed) c.hostStop = true
@@ -422,6 +440,11 @@ class DaidaiVoice(
     // ---- セッションのスレッドからの通知(main へ戻す)
 
     private inner class Listener(private val id: Int) : VoiceSessionListener {
+        /** この runtime で 201 から受け取ったハンドル(セッションのスレッドで足し、メインで読む)。新しい 16 件 */
+        private val seen = ArrayDeque<String>()
+
+        fun seenHandles(): List<String> = synchronized(seen) { seen.toList() }
+
         override fun onSnapshot(snapshot: VoiceSnapshot) {
             main.post { if (id == runtimeId) onSnapshotOnMain(snapshot) }
         }
@@ -444,6 +467,12 @@ class DaidaiVoice(
         }
 
         override fun onConversation(tag: TurnTag, info: ConversationInfo) {
+            info.handle?.let { h ->
+                synchronized(seen) {
+                    seen.addLast(h)
+                    if (seen.size > ENDED_HANDLES_MAX) seen.removeFirst()
+                }
+            }
             // 作り直し前の runtime のものは、(閉じる前後の回収は DeleteOnCloseBridge が行うので)何もしない
             main.post { if (id == runtimeId) onConversationOnMain(tag, info) }
         }
@@ -483,5 +512,7 @@ class DaidaiVoice(
 
         /** 残響の待ち: 再生の完了(往復の終わりの通知)から続きのマイクを開く(`start`)までの待ち。開いた直後の録音の破棄([VoiceLimits.START_TONE_GUARD_MS])とは別のもの */
         const val ECHO_WAIT_MS = 300L
+
+        private const val ENDED_HANDLES_MAX = 16
     }
 }

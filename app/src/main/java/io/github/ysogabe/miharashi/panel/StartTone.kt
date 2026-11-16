@@ -26,7 +26,7 @@ fun interface StartSound {
  * 鳴らす間の録音は `VoiceSession` が [VoiceLimits.START_TONE_GUARD_MS] だけ捨てる(どちらの音もこの時間に収まる長さ)。
  *
  * - 最初の往復([play]): `TONE_PROP_BEEP`(単発のビープ)を [DURATION_MS] ms。
- * - 続きの往復([playFollow]、S2-U10): `TONE_PROP_ACK`(確認・受理を表す、ビープとは別系統の `PROP` 音)を [FOLLOW_DURATION_MS] ms。
+ * - 続きの往復([playFollow]、S2-U10): `TONE_PROP_ACK`(確認・受理を表す `PROP` 音。2 つ組のように聞こえる場合があるので、途中で切れない [FOLLOW_DURATION_MS] ms にする)を鳴らす。
  *   音の種類を変えて、聞いて「また聞いている」と分かるようにする。音量は同じ。**どちらの波形も、実機のスピーカーで聞き分けられるかは未確認**
  *   (`ToneGenerator` の音の定義は端末の実装にあり、このリポジトリでは測れない。2a-P の実機の確認で聞く。聞き分けられなければ [FOLLOW_TONE] を差し替える)。
  */
@@ -60,7 +60,7 @@ class ToneStartSound(
         const val FOLLOW_TONE = ToneGenerator.TONE_PROP_ACK
 
         /** 続きの往復の音の長さ。開始音の保護([VoiceLimits.START_TONE_GUARD_MS])より短い */
-        const val FOLLOW_DURATION_MS = 200
+        const val FOLLOW_DURATION_MS = 300
 
         /** `ToneGenerator` の音量(0〜100)。スピーカーを驚かせない控えめな値 */
         const val VOLUME = 30
