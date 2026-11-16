@@ -458,8 +458,12 @@ class DaidaiVoiceConversationTest {
         assertTrue(t2.follow)
         assertEquals(ConversationParam(H1), t2.conversation)
         h.sim.advance(10_000)
-        h.pages.animationEnded(h.sim.now) // 余計な落ち着きの通知でも二重に始めない
-        assertEquals(2, h.rt.turnStarts.size)
+        // 余計な落ち着きの通知でも二重に始めない。すでに IDLE なので animationEnded は onIdle を通知しない。onIdle を直接もう一度呼ぶ
+        h.pages.animationEnded(h.sim.now)
+        h.voice.onIdle()
+        h.voice.onIdle()
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals("onIdle が重ねて通知されても二重に始めない", 2, h.rt.turnStarts.size)
     }
 
     @Test fun aDragToAWhileHoldingTheNextTurnEndsTheConversationWithoutCreatingIt() {
@@ -506,6 +510,75 @@ class DaidaiVoiceConversationTest {
         assertEquals(1, h.rt.turnStarts.size)
         assertEquals("保留したままでも期限で必ず終わる", listOf(H1), h.rt.conversationEnds)
         assertFalse(h.pages.sessionActive)
+    }
+
+    @Test fun anAutoConversationHeldByADragEndsAtTheAcceptanceDeadlineAndHoldsTheNextAutoStart() {
+        val h = Harness()
+        h.ready()
+        h.startAuto()
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now)) // 続きの開始がドラッグで保留される
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals(1, h.rt.turnStarts.size)
+        assertTrue(h.pages.sessionActive)
+        h.sim.advance(DaidaiVoice.ACCEPT_WINDOW_MS + 1_000) // ドラッグしたまま受付の期限が来る
+        assertEquals(1, h.rt.turnStarts.size)
+        assertEquals("期限で終わる", listOf(H1), h.rt.conversationEnds)
+        assertFalse(h.pages.sessionActive)
+        h.pages.endDrag(Page.A, h.sim.now) // 指を離して A に移る(会話はもう終わっている)
+        h.pages.animationEnded(h.sim.now)
+        h.sim.settle()
+        assertEquals("期限の終わりは S2-U14 に数える", MicDenial.AFTER_CONVERSATION_LIMIT, h.nextAutoDenial())
+    }
+
+    @Test fun aResumedHeldTurnIsNotCutByTheOldPendingDeadline() {
+        val h = Harness()
+        h.startSwipe()
+        val t0 = h.sim.now
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now))
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS) // 保留(期限の予約が置かれる)
+        h.pages.endDrag(Page.B, h.sim.now)
+        h.pages.animationEnded(h.sim.now) // 落ち着いて、続き(往復 2)が始まる
+        assertEquals(2, h.rt.turnStarts.size)
+        val cancelsBefore = h.rt.cancels
+        h.sim.advance(DaidaiVoice.ACCEPT_WINDOW_MS + 1_000 - (h.sim.now - t0)) // 古い期限の予約の時刻を越える
+        assertTrue(h.sim.now - t0 > DaidaiVoice.ACCEPT_WINDOW_MS)
+        assertTrue("進行中の往復のある会話は期限の予約で終わらない", h.pages.sessionActive)
+        assertTrue(h.rt.conversationEnds.isEmpty())
+        assertEquals(cancelsBefore, h.rt.cancels)
+        // 本来の受付の期限の規則はそのまま: この往復が終われば次は始めず、期限として終わる
+        h.endTurn(TurnOutcome.PLAYED)
+        h.sim.advance(10_000)
+        assertEquals(2, h.rt.turnStarts.size)
+        assertEquals(listOf(H1), h.rt.conversationEnds)
+        assertFalse(h.pages.sessionActive)
+    }
+
+    @Test fun aNewConversationAfterCancellingAHeldTurnIsNotCutByTheOldPendingDeadline() {
+        val h = Harness()
+        h.startSwipe()
+        val t0 = h.sim.now
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now))
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS) // 保留(期限の予約が置かれる)
+        h.pages.endDrag(Page.A, h.sim.now) // A へ移って取り消す
+        h.pages.animationEnded(h.sim.now)
+        assertEquals(listOf(H1), h.rt.conversationEnds)
+        h.sim.advance(10_000)
+        h.swipeToB() // 再入場
+        h.sim.advance(DaidaiVoice.ENTRY_DEBOUNCE_MS)
+        assertEquals("新しい会話の最初の往復が始まる", 2, h.rt.turnStarts.size)
+        val cancelsBefore = h.rt.cancels
+        h.sim.advance(DaidaiVoice.ACCEPT_WINDOW_MS + 1_000 - (h.sim.now - t0)) // 古い期限の予約の時刻を越える(新しい会話の期限の前)
+        assertTrue(h.sim.now - t0 > DaidaiVoice.ACCEPT_WINDOW_MS)
+        assertTrue("新しい会話は古い期限の予約で終わらない", h.pages.sessionActive)
+        assertEquals("終わりの通知は最初の会話の 1 回だけ", listOf(H1), h.rt.conversationEnds)
+        assertEquals(cancelsBefore, h.rt.cancels)
+        assertEquals(2, h.rt.turnStarts.size)
     }
 
     @Test fun anAbsentGateWhenTheHeldTurnIsResumedEndsTheConversation() {
