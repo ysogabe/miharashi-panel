@@ -30,9 +30,16 @@ private class FakeRuntime(val settings: DaidaiSettings, val listener: VoiceSessi
     }
 
     override fun retry() { log += "retry"; retries++ }
-    override fun start(request: TurnRequest) { log += "startTurn" }
-    override fun retry(request: TurnRequest) { log += "retryTurn" }
-    override fun endConversation(handle: String) { log += "endConversation" }
+    /** [start] / [retry] の [TurnRequest] 版に渡された値(T2 の会話の制御の試験が使う) */
+    val turnStarts = mutableListOf<TurnRequest>()
+    val turnRetries = mutableListOf<TurnRequest>()
+
+    /** [endConversation] に渡されたハンドル(呼ばれた順) */
+    val conversationEnds = mutableListOf<String>()
+
+    override fun start(request: TurnRequest) { log += "startTurn"; turnStarts += request }
+    override fun retry(request: TurnRequest) { log += "retryTurn"; turnRetries += request }
+    override fun endConversation(handle: String) { log += "endConversation"; conversationEnds += handle }
     override fun cancel() { log += "cancel"; cancels++ }
     override fun stopMicNow() { log += "stopMic"; stopMics++ }
     override fun close() { log += "close"; closed = true }

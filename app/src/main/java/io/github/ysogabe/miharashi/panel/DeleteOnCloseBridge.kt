@@ -13,7 +13,8 @@ package io.github.ysogabe.miharashi.panel
  *   確認と登録は [close] と同じロックなので、「閉じていないと見たのに回収もされない」隙間はない。
  * - [cancel]`(id)` は、その ID を `pending` から外してから内側へ渡す。`VoiceSession` は終えるとき(完了・失敗・取消・古い世代の作成成功)に必ず
  *   `bridge.cancel(id)` を呼ぶので、配送された作成は通常の取消で `pending` から外れる。引き渡しのための別の API は要らない。
- * - [close] はロックの中で閉じて、`pending` に残っている ID を**返す**(呼び出し側がワーカーのスレッドで [cancel] する。メインスレッドで通信しない)。
+ * - [close] はロックの中で閉じて、`pending` に残っている `session_id` と、その 201 のハンドルを [ClosedPending] で**返す**
+ *   (呼び出し側がワーカーのスレッドで [cancel] と [endConversation] する。メインスレッドで通信しない)。
  *   セッションのスレッドが既に引き継いでいたものも含むが、DELETE は冪等(404 を受け入れる)なので二重になっても問題ない。
  * - **会話のハンドル**(段階 2a-P): 作成の応答 `201` に `conversation.handle` があれば、`session_id` と一緒に持つ。閉じたあとに成功した作成は、`DELETE` に加えて
  *   [endConversation] もその場で(最良努力で)送る。閉じる前の作成は、[close] が `session_id` と一緒にハンドルも返す(呼び出し側がワーカーで送る)。

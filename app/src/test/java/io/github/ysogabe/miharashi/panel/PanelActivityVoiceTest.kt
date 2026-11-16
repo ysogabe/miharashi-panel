@@ -26,9 +26,12 @@ private class ActivityRuntime(val settings: DaidaiSettings, val listener: VoiceS
     var closed = false
     override fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) { calls += "start:${reason.wire}:$autoStarted" }
     override fun retry() { calls += "retry" }
-    override fun start(request: TurnRequest) { calls += "startTurn" }
-    override fun retry(request: TurnRequest) { calls += "retryTurn" }
-    override fun endConversation(handle: String) { calls += "endConversation" }
+    val turnStarts = mutableListOf<TurnRequest>()
+    val turnRetries = mutableListOf<TurnRequest>()
+    val conversationEnds = mutableListOf<String>()
+    override fun start(request: TurnRequest) { calls += "startTurn"; turnStarts += request }
+    override fun retry(request: TurnRequest) { calls += "retryTurn"; turnRetries += request }
+    override fun endConversation(handle: String) { calls += "endConversation"; conversationEnds += handle }
     override fun cancel() { calls += "cancel" }
     override fun stopMicNow() { calls += "stopMic" }
     override fun close() { closed = true; calls += "close" }

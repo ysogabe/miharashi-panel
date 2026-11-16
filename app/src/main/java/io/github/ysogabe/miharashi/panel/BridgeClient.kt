@@ -33,7 +33,7 @@ import java.util.IdentityHashMap
  * 未接続の `HttpURLConnection.disconnect()` は、その後の接続を禁止しない(JDK は何もしない)ので、`disconnect` だけには頼らない:
  * 接続前の abort は直前の確認が、`connect()` の最中の abort は接続が済んだ直後の確認が拾い、いずれも本文・要求の送信より前に止める。
  * 接続が済んだあとの abort は、登録済みの接続への `disconnect` が効く。abort より**後**に始まった呼び出しは新しい世代なので有効。
- * [cancel] の接続は中断の対象外(登録も確認もしない)で、abort の後でも送れる。
+ * [cancel] と [endConversation] の接続は中断の対象外(登録も確認もしない)で、abort の後でも送れる。
  *
  * ## 送信は 1 回の呼び出しにつき HTTP 要求 1 回
  * 本文のある POST(作成・チャンク)は、本文の長さを先に決めたストリーミング(`setFixedLengthStreamingMode`)で送る。JDK は
