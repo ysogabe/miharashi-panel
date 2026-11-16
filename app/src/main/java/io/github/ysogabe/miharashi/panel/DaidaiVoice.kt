@@ -72,7 +72,9 @@ fun interface VoiceRuntimeFactory {
  *
  * - 続けるかの判定([decide]): 往復の結果が続けてよい([TurnOutcome.canContinue])、B に落ち着いて見えている、設定済み、
  *   ホストの `continue` が false でない、往復数が [MAX_TURNS] 未満、会話の開始から [ACCEPT_WINDOW_MS] 未満、在席ゲート(S2-U9)。
- * - 続けるなら [echoWaitMs](残響の待ち)の予約を置き、来たら条件(B・受付の期限)をもう一度確かめて [VoiceRuntime.start] する。
+ * - 続けるなら [echoWaitMs](残響の待ち)の予約を置き、来たら条件(B・受付の期限・設定・在席)をもう一度確かめて [VoiceRuntime.start] する
+ *   (在席の規則は [presenceAllows] を [decide] と共有)。ドラッグ・アニメーション中([PageController.userBusy])なら開始を保留し、
+ *   [onIdle] で落ち着いてから確かめ直して始める(保留の間も会話は続き、受付の期限で必ず終わる)。
  * - 自動切替の歯止め(R5): [AutoSwitchPolicy] へ渡すのは会話の**最初の往復**だけ。自動起動の会話が上限・期限・`continue=false` で終わったときだけ
  *   [AutoSwitchPolicy.onAutoConversationLimited](S2-U14)。
  * - 会話の間(往復の間の残響の待ち・作成の待ちを含む)は [PageController.sessionActive] を true にして B の無操作タイマーを止める。
@@ -151,8 +153,11 @@ class DaidaiVoice(
         /** 一度でも「進行中」のスナップショットを見たか(再試行が無視されたことの検出に使う) */
         var sawActive = false
 
-        /** 残響の待ちの予約 */
+        /** 残響の待ちの予約。続きの開始を保留している間は、受付の期限で会話を終える予約(どちらも [endConversation] が消す) */
         var follow: Cancelable? = null
+
+        /** ドラッグ・アニメーション中で開始を保留している続きの往復番号(0 = 保留なし)。往復数は保留の間に進めない */
+        var pendingTurn = 0
 
         override fun toString() = "Conversation(gen=$gen, turns=$turnsStarted)"
     }
@@ -203,6 +208,7 @@ class DaidaiVoice(
     }
 
     override fun onIdle() {
+        resumePendingFollow()
         if (!waitingForIdle) return
         waitingForIdle = false
         if (pendingEntry != null && pages.settledPage == Page.B) armDebounce()
@@ -409,23 +415,69 @@ class DaidaiVoice(
         if (pages.settledPage != Page.B || !pages.bVisible) return Verdict.END
         if (!settings().isConfigured()) return Verdict.END
         if (c.hostStop || c.turnsStarted >= MAX_TURNS || nowMs() >= c.startedAtMs + ACCEPT_WINDOW_MS) return Verdict.END_LIMITED
-        return when (presence(nowMs()).presence) {
-            Presence.PRESENT -> Verdict.CONTINUE
-            Presence.ABSENT -> Verdict.END
-            // 照度が取れないとき: 通知の自動起動で始まった会話は続けず、スワイプ・再試行の会話は続ける
-            Presence.UNKNOWN -> if (c.autoStarted) Verdict.END else Verdict.CONTINUE
-        }
+        return if (presenceAllows(c)) Verdict.CONTINUE else Verdict.END
     }
 
-    /** 残響の待ちが明けた。世代・B・受付の期限をもう一度確かめて、続きの往復を始める */
+    /**
+     * 在席ゲート(S2-U9)の判定。[decide](往復の終わり)と [startFollowTurn](続きを始める直前)で**同じ規則**を使う。
+     * 在席なら true、不在なら false。照度が取れないとき(UNKNOWN)は、通知の自動起動で始まった会話は false、スワイプ・再試行の会話は true。
+     * 在席による終わりは、上限・期限・`continue=false` ではないので S2-U14 には数えない。
+     */
+    private fun presenceAllows(c: Conversation): Boolean = when (presence(nowMs()).presence) {
+        Presence.PRESENT -> true
+        Presence.ABSENT -> false
+        Presence.UNKNOWN -> !c.autoStarted
+    }
+
+    /**
+     * 残響の待ちが明けた。世代を照合し、ドラッグ・アニメーション中なら開始を保留して [onIdle] を待つ(最初の往復の [fire] と同じ条件)。
+     * そうでなければ [startFollowTurn]。
+     */
     private fun onFollowDue(gen: Long, turn: Int) {
         val c = conversation ?: return
         if (c.gen != gen || c.currentTurn + 1 != turn) return
         c.follow = null
-        if (pages.settledPage != Page.B) return endConversation()
+        if (pages.userBusy && pages.settledPage == Page.B) {
+            // 保留: 会話は続いている(sessionActive は true のまま)。往復数は進めない。落ち着かないまま受付の期限が来ても必ず終える
+            c.pendingTurn = turn
+            val remaining = maxOf(0L, c.startedAtMs + ACCEPT_WINDOW_MS - nowMs())
+            c.follow = main.postDelayed({ onPendingDeadline(gen, turn) }, remaining)
+            return
+        }
+        startFollowTurn(c, turn)
+    }
+
+    /** 保留したまま受付の期限が来た。落ち着くのを待たずに会話を終える(マイクは開いていない) */
+    private fun onPendingDeadline(gen: Long, turn: Int) {
+        val c = conversation ?: return
+        if (c.gen != gen || c.pendingTurn != turn) return
+        c.follow = null
+        c.pendingTurn = 0
+        endConversation(limited = true)
+    }
+
+    /** 落ち着いた([PageListener.onIdle])。保留した続きがあれば、条件を確かめ直して始める(A に落ち着いたなら会話を終える) */
+    private fun resumePendingFollow() {
+        val c = conversation ?: return
+        val turn = c.pendingTurn
+        if (turn == 0) return
+        if (pages.userBusy) return
+        c.follow?.cancel()
+        c.follow = null
+        c.pendingTurn = 0
+        startFollowTurn(c, turn)
+    }
+
+    /**
+     * 続きの往復を始める直前の確かめ直し(世代は呼び出し側で照合済み): B に落ち着いている、受付の期限の前、設定済み、在席([presenceAllows])。
+     * どれかが外れたら会話を終える(期限だけが [endConversation] の `limited`。在席・B・設定は S2-U14 に数えない)。
+     */
+    private fun startFollowTurn(c: Conversation, turn: Int) {
+        if (pages.settledPage != Page.B || !pages.bVisible) return endConversation()
         if (nowMs() >= c.startedAtMs + ACCEPT_WINDOW_MS) return endConversation(limited = true)
         val rt = runtime
         if (rt == null || !settings().isConfigured()) return endConversation()
+        if (!presenceAllows(c)) return endConversation()
         c.turnsStarted = turn
         c.currentTurn = turn
         // ハンドルが無ければ(旧ホスト)`{}` で送る。ホストは無視する

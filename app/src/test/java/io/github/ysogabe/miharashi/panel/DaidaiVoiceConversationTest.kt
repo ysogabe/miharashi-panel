@@ -381,7 +381,145 @@ class DaidaiVoiceConversationTest {
         h.conversation(H1)
         h.playedAndFollow()
         h.playedAndFollow()
-        assertEquals("往復の終わりごとに 1 回", 2, h.presenceCalls)
+        // 往復の終わりの判定で 1 回 + 続きを始める直前の確かめ直しで 1 回(指摘 1: 残響の待ちの間に在席が変わるのを見る)
+        assertEquals("往復の終わりごとに 2 回(判定と開始の直前)", 4, h.presenceCalls)
+    }
+
+    @Test fun anAbsentGateAfterTheEchoWaitEndsTheConversationWithoutCreatingTheNextTurn() {
+        val h = Harness()
+        h.startSwipe()
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED) // 判定の時点では PRESENT → 残響の待ちを置く
+        h.presence = GateVerdict(Presence.ABSENT, AmbientLightGate.REASON_DARK) // 待ちの間に暗闇が閾値に達した
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals("作成は 0 回(続きは作られない)", 1, h.rt.turnStarts.size)
+        assertEquals("終わりの通知は 1 回", listOf(H1), h.rt.conversationEnds)
+        assertFalse(h.pages.sessionActive)
+        h.sim.advance(10_000)
+        assertEquals(listOf(H1), h.rt.conversationEnds)
+    }
+
+    @Test fun anAbsentEndAfterTheEchoWaitIsNotCountedAsAnAutoLimit() {
+        val h = Harness()
+        h.ready()
+        h.startAuto()
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        h.presence = GateVerdict(Presence.ABSENT, AmbientLightGate.REASON_DARK)
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals(1, h.rt.turnStarts.size)
+        assertEquals(listOf(H1), h.rt.conversationEnds)
+        // 在席による終わりは S2-U14(見送りを立てる)に数えない
+        assertNull(h.nextAutoDenial())
+    }
+
+    @Test fun anUnknownGateAfterTheEchoWaitEndsAnAutoStartedConversationButNotASwipeOne() {
+        val auto = Harness()
+        auto.ready()
+        auto.startAuto()
+        auto.conversation(H1)
+        auto.endTurn(TurnOutcome.PLAYED) // 判定の時点では PRESENT
+        auto.presence = GateVerdict(Presence.UNKNOWN, AmbientLightGate.REASON_LUX_UNAVAILABLE)
+        auto.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals("自動起動の会話は、待ちの間に UNKNOWN に変わったら続かない", 1, auto.rt.turnStarts.size)
+        assertEquals(listOf(H1), auto.rt.conversationEnds)
+
+        val swipe = Harness()
+        swipe.startSwipe()
+        swipe.conversation(H1)
+        swipe.endTurn(TurnOutcome.PLAYED)
+        swipe.presence = GateVerdict(Presence.UNKNOWN, AmbientLightGate.REASON_LUX_UNAVAILABLE)
+        swipe.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals("スワイプの会話は UNKNOWN でも続く", 2, swipe.rt.turnStarts.size)
+        assertTrue(swipe.rt.conversationEnds.isEmpty())
+    }
+
+    // ---- ドラッグ中は続きのマイクを開かない(指摘 2)
+
+    @Test fun aDragDuringTheEchoWaitHoldsTheNextTurnUntilBSettlesAndThenStartsOnce() {
+        val h = Harness()
+        h.startSwipe()
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now)) // 残響の待ちの間に B でドラッグを始めた(settledPage は B のまま)
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals("ドラッグ中は作成 0 回", 1, h.rt.turnStarts.size)
+        assertTrue("保留の間も会話は続く", h.pages.sessionActive)
+        assertTrue(h.rt.conversationEnds.isEmpty())
+        h.sim.advance(30_000)
+        assertEquals("保留が長引いても始めない(期限の前)", 1, h.rt.turnStarts.size)
+        assertTrue(h.pages.sessionActive)
+        h.pages.endDrag(Page.B, h.sim.now) // B に戻す
+        assertEquals("アニメーション中も始めない", 1, h.rt.turnStarts.size)
+        h.pages.animationEnded(h.sim.now)
+        assertEquals("落ち着いたら 1 回だけ始まる", 2, h.rt.turnStarts.size)
+        val t2 = h.lastReq
+        assertEquals(TurnTag(h.rt.turnStarts[0].tag.conversationGen, 2), t2.tag)
+        assertTrue(t2.follow)
+        assertEquals(ConversationParam(H1), t2.conversation)
+        h.sim.advance(10_000)
+        h.pages.animationEnded(h.sim.now) // 余計な落ち着きの通知でも二重に始めない
+        assertEquals(2, h.rt.turnStarts.size)
+    }
+
+    @Test fun aDragToAWhileHoldingTheNextTurnEndsTheConversationWithoutCreatingIt() {
+        val h = Harness()
+        h.startSwipe()
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now))
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals(1, h.rt.turnStarts.size)
+        h.pages.endDrag(Page.A, h.sim.now) // A へ移る
+        h.pages.animationEnded(h.sim.now)
+        h.sim.advance(10_000)
+        assertEquals("作成は 0 回", 1, h.rt.turnStarts.size)
+        assertEquals("終わりの通知は 1 回", listOf(H1), h.rt.conversationEnds)
+        assertFalse(h.pages.sessionActive)
+    }
+
+    @Test fun theAcceptanceDeadlinePassingWhileHeldMeansItIsNotStartedEvenAfterSettling() {
+        val h = Harness()
+        h.startSwipe()
+        val t0 = h.sim.now
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now))
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        assertEquals(1, h.rt.turnStarts.size)
+        h.sim.tick(DaidaiVoice.ACCEPT_WINDOW_MS - (h.sim.now - t0) + 1) // 期限を過ぎる(予約は走らせない)
+        h.pages.endDrag(Page.B, h.sim.now)
+        h.pages.animationEnded(h.sim.now) // 落ち着いた(onIdle で期限を見る)
+        h.sim.settle()
+        assertEquals("期限のあとは始めない", 1, h.rt.turnStarts.size)
+        assertEquals(listOf(H1), h.rt.conversationEnds)
+        assertFalse(h.pages.sessionActive)
+    }
+
+    @Test fun aHeldTurnEndsAtTheAcceptanceDeadlineEvenIfTheDragNeverEnds() {
+        val h = Harness()
+        h.startSwipe()
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now))
+        h.sim.advance(DaidaiVoice.ACCEPT_WINDOW_MS + 1_000) // ドラッグしたまま期限が過ぎる
+        assertEquals(1, h.rt.turnStarts.size)
+        assertEquals("保留したままでも期限で必ず終わる", listOf(H1), h.rt.conversationEnds)
+        assertFalse(h.pages.sessionActive)
+    }
+
+    @Test fun anAbsentGateWhenTheHeldTurnIsResumedEndsTheConversation() {
+        val h = Harness()
+        h.startSwipe()
+        h.conversation(H1)
+        h.endTurn(TurnOutcome.PLAYED)
+        assertTrue(h.pages.beginDrag(h.sim.now))
+        h.sim.advance(DaidaiVoice.ECHO_WAIT_MS)
+        h.presence = GateVerdict(Presence.ABSENT, AmbientLightGate.REASON_DARK)
+        h.pages.endDrag(Page.B, h.sim.now)
+        h.pages.animationEnded(h.sim.now)
+        assertEquals("落ち着いたときにも在席を確かめ直す", 1, h.rt.turnStarts.size)
+        assertEquals(listOf(H1), h.rt.conversationEnds)
     }
 
     @Test fun anUnknownGateDoesNotStopAnErrorRetryConversation() {
