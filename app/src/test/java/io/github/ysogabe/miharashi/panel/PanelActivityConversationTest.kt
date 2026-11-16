@@ -236,6 +236,45 @@ class PanelActivityConversationTest {
         } finally { f.finish() }
     }
 
+    // ---- 在席ゲートの結線(S2-U9。PanelActivity が本物の照度ゲートを DaidaiVoice に渡している)
+
+    private fun lux(v: Float) =
+        manager.sendSensorEventToListeners(SensorEventBuilder.newBuilder().setSensor(sensor).setValues(floatArrayOf(v)).build(), sensor)
+
+    /** 暗闇(または明るさ)が 31 秒続き(既定のゲート 30 秒を過ぎる)たあと、1 往復目が再生まで終わる。パネルの接続先は空なので、消灯の経路は通らない */
+    private fun finishFirstTurnAfter31SecondsAt(lux: Float): ConvActivityRuntime {
+        val f = start()
+        fixtures += f
+        f.toB()
+        idleFor(500)
+        val rt = runtimes.single()
+        val first = rt.turnStarts.single()
+        rt.listener.onConversation(first.tag, ConversationInfo(HANDLE, true, true))
+        lux(lux)
+        idleFor(31_000)
+        rt.listener.onEnded(false, "done", TurnOutcome.PLAYED, first.tag)
+        idleFor(2_000)
+        return rt
+    }
+
+    private val fixtures = mutableListOf<Fixture>()
+
+    @After fun finishFixtures() { fixtures.forEach { it.finish() } }
+
+    @Test fun theRealAmbientLightGateEndsTheConversationInTheDarkRoom() {
+        val rt = finishFirstTurnAfter31SecondsAt(0f)
+        assertEquals("暗闇が続いたら(不在)続きは作らない", 1, rt.turnStarts.size)
+        assertEquals(listOf(HANDLE), rt.conversationEnds)
+    }
+
+    @Test fun theRealAmbientLightGateLetsTheConversationContinueInABrightRoom() {
+        val rt = finishFirstTurnAfter31SecondsAt(180f)
+        assertEquals("明るければ続く", 2, rt.turnStarts.size)
+        assertTrue(rt.turnStarts[1].follow)
+        assertEquals(ConversationParam(HANDLE), rt.turnStarts[1].conversation)
+        assertTrue(rt.conversationEnds.isEmpty())
+    }
+
     // ---- 無操作タイマー(結線を通す)
 
     @Test fun theIdleTimerStaysStoppedAcrossTheEchoWaitAndRestartsFromTheConversationEnd() {
