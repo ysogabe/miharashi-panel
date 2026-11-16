@@ -26,8 +26,11 @@ enum class AutoSwitchReason {
     TOO_OLD,
 }
 
-/** 自動切替が起点のマイクを開かない理由(設計書 §7、AC19)。 */
-enum class MicDenial { AUTO_LISTEN_OFF, AFTER_NO_SPEECH, COOLDOWN, HOURLY_LIMIT }
+/**
+ * 自動切替が起点のマイクを開かない理由(設計書 §7、AC19)。
+ * `AFTER_CONVERSATION_LIMIT`: 直前の自動起動の会話が、往復数の上限・受付の期限・ホストの `continue=false` で終わった(段階 2a-P、S2-U14)。
+ */
+enum class MicDenial { AUTO_LISTEN_OFF, AFTER_NO_SPEECH, AFTER_CONVERSATION_LIMIT, COOLDOWN, HOURLY_LIMIT }
 
 /**
  * 判定の結果。`openMic` は切替(`action == SWITCH`)のときだけ意味があり、切替の判定とは別に歯止めを表す
@@ -68,12 +71,19 @@ data class AutoSwitchContext(
  * - 直前の自動起動のセッションが `no_speech` で終わっていたら開かない([onSessionEnded])。
  *   解除: 利用者の手動操作起点のセッションが `no_speech` 以外で終わったとき。時間では解除しない
  *   (無人の部屋で通知のたびに聞き続けないため)。アプリを作り直すと(メモリのみ)解除される。
+ * - 直前の自動起動の**会話**が、往復数の上限・受付の期限・ホストの `continue=false` で終わっていたら開かない([onAutoConversationLimited]。S2-U14)。
+ *   無人の部屋で TV の音を拾い続けた見込みがあるため。解除の条件は無発話の見送りと同じ(手動のセッションが `no_speech` 以外で終わったとき)。
+ *
+ * 会話の複数往復(段階 2a-P)のうち、[onAutoMicStarted]・[onSessionEnded] に渡すのは**会話の最初の往復だけ**(続きの往復はクールダウン・回数・
+ * 無発話の見送りに数えない。PRD R5。呼ぶ側 `DaidaiVoice` が選ぶ)。
  * 起動の記録は呼ぶ側が [onAutoMicStarted] で行う(実際にマイクを開いたときだけ数える)。
  */
 class AutoSwitchPolicy(private val gate: PresenceGate) {
     private var pending: NoticeCandidate? = null
     private val autoMicStarts = ArrayDeque<Long>()
-    private var heldAfterNoSpeech = false
+
+    /** 自動起動を見送っている理由(`AFTER_NO_SPEECH` か `AFTER_CONVERSATION_LIMIT`)。null なら見送っていない */
+    private var held: MicDenial? = null
 
     /** 直近の判定(設定画面の診断表示用)。 */
     var lastResult: AutoSwitchResult? = null
@@ -117,7 +127,15 @@ class AutoSwitchPolicy(private val gate: PresenceGate) {
      */
     fun onSessionEnded(autoStarted: Boolean, reason: String?) {
         val noSpeech = reason == REASON_NO_SPEECH
-        if (autoStarted) heldAfterNoSpeech = noSpeech else if (!noSpeech) heldAfterNoSpeech = false
+        if (autoStarted) held = if (noSpeech) MicDenial.AFTER_NO_SPEECH else null else if (!noSpeech) held = null
+    }
+
+    /**
+     * 自動起動で始まった会話が、往復数の上限・受付の期限・ホストの `continue=false` で終わったとき(S2-U14)。次の自動起動の見送りに数える。
+     * 続きの無発話・エラー・取消・続けない結果では呼ばない。スワイプ・再試行の会話の上限でも呼ばない(呼ぶ側が選ぶ)。
+     */
+    fun onAutoConversationLimited() {
+        held = MicDenial.AFTER_CONVERSATION_LIMIT
     }
 
     private fun decide(c: NoticeCandidate, ctx: AutoSwitchContext): AutoSwitchResult {
@@ -141,7 +159,7 @@ class AutoSwitchPolicy(private val gate: PresenceGate) {
 
     private fun micDenial(ctx: AutoSwitchContext): MicDenial? {
         if (!ctx.autoListen) return MicDenial.AUTO_LISTEN_OFF
-        if (heldAfterNoSpeech) return MicDenial.AFTER_NO_SPEECH
+        held?.let { return it }
         val now = ctx.nowMs
         pruneStarts(now)
         val last = autoMicStarts.lastOrNull()

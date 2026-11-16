@@ -52,7 +52,7 @@ class DaidaiVoiceSessionTest {
                 Runtime(VoiceSession(audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0"), audio)
                     .also { runtimes += it }
             },
-            sim, { rendered += it }, StartSound { tones++ }, { sim.now },
+            sim, { rendered += it }, StartSound { tones++ }, { sim.now }, { GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT) },
         )
         val ui get() = rendered.last()
 
@@ -276,7 +276,10 @@ class DaidaiVoiceSessionTest {
                         session.start(reason, noticeId, autoStarted)
                     }
                     override fun retry() = session.retry()
-                    override fun start(request: TurnRequest) = session.start(request)
+                    override fun start(request: TurnRequest) {
+                        starts += request.reason // DaidaiVoice は往復の要求で始める(段階 2a-P)。旧い呼び方と同じ記録に足す
+                        session.start(request)
+                    }
                     override fun retry(request: TurnRequest) = session.retry(request)
                     override fun endConversation(handle: String) {}
                     override fun cancel() = session.cancel()
@@ -287,7 +290,7 @@ class DaidaiVoiceSessionTest {
                     }
                 }
             },
-            sim, { rendered += it }, StartSound { }, { sim.now },
+            sim, { rendered += it }, StartSound { }, { sim.now }, { GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT) },
         )
         private var rev = 0L
 

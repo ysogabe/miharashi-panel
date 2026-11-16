@@ -37,8 +37,11 @@ private class FakeRuntime(val settings: DaidaiSettings, val listener: VoiceSessi
     /** [endConversation] に渡されたハンドル(呼ばれた順) */
     val conversationEnds = mutableListOf<String>()
 
-    override fun start(request: TurnRequest) { log += "startTurn"; turnStarts += request }
-    override fun retry(request: TurnRequest) { log += "retryTurn"; turnRetries += request }
+    // DaidaiVoice は往復の要求(TurnRequest)で始める(段階 2a-P)。旧い呼び方の記録(starts・retries)にも同じ内容を足し、1 入場 1 往復の既存の試験をそのまま通す
+    override fun start(request: TurnRequest) {
+        log += "startTurn"; turnStarts += request; starts += Start(request.reason, request.noticeId, request.autoStarted)
+    }
+    override fun retry(request: TurnRequest) { log += "retryTurn"; turnRetries += request; retries++ }
     override fun endConversation(handle: String) { log += "endConversation"; conversationEnds += handle }
     override fun cancel() { log += "cancel"; cancels++ }
     override fun stopMicNow() { log += "stopMic"; stopMics++ }
@@ -60,7 +63,9 @@ class DaidaiVoiceTest {
         val runtimes = mutableListOf<FakeRuntime>()
         val entered = mutableListOf<DaidaiEntry>()
         var tones = 0
+        var followTones = 0
         var toneThrows = false
+        var presence = GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT)
         var factoryCalls = 0
         var failFactory = false
         lateinit var voice: DaidaiVoice
@@ -76,7 +81,12 @@ class DaidaiVoiceTest {
                     if (failFactory) throw IllegalStateException("no")
                     FakeRuntime(s, l).also { runtimes += it }
                 },
-                sim, { rendered += it }, StartSound { tones++; if (toneThrows) throw IllegalStateException("tone") }, { sim.now },
+                sim, { rendered += it },
+                object : StartSound {
+                    override fun play() { tones++; if (toneThrows) throw IllegalStateException("tone") }
+                    override fun playFollow() { followTones++; if (toneThrows) throw IllegalStateException("tone") }
+                },
+                { sim.now }, { presence },
             )
             controller.entryListener = object : DaidaiEntryListener {
                 override fun onEntered(entry: DaidaiEntry) { entered += entry; voice.onEntered(entry) }
@@ -363,6 +373,13 @@ class DaidaiVoiceTest {
         assertEquals(1, rt.starts.size)
     }
 
+    /** 今の(最後に始めた)往復が終わったと、セッションのスレッドから通知する(印は DaidaiVoice が付けたもの) */
+    private fun Harness.endTurn(outcome: TurnOutcome, reason: String = "done") {
+        val r = rt.turnStarts.last()
+        rt.listener.onEnded(r.autoStarted, reason, outcome, r.tag)
+        sim.settle()
+    }
+
     @Test fun leavingBBySwipeCancelsAndStopsTheMicAtOnce() {
         val h = Harness()
         h.startSwipeSession()
@@ -446,16 +463,18 @@ class DaidaiVoiceTest {
     @Test fun sessionActiveIsTrueOnlyWhileTheSessionRuns() {
         val h = Harness()
         h.startSwipeSession()
-        assertFalse(h.pages.sessionActive)
+        // 段階 2a-P: 会話が続いている間(開始の直後・往復の間を含む)は進行中として扱う。会話の終わりで false に戻る
+        assertTrue("会話が始まった時点から進行中(作成の待ちを含む)", h.pages.sessionActive)
         h.snapshot(snap(VoiceState.IDLE, active = true)) // PREPARING は IDLE 表示に畳まれるが進行中
         assertTrue(h.pages.sessionActive)
         h.snapshot(snap(VoiceState.LISTENING, active = true, mic = true))
         assertTrue(h.pages.sessionActive)
         h.snapshot(snap(VoiceState.REPLYING, active = true))
         assertTrue(h.pages.sessionActive)
-        h.snapshot(snap(VoiceState.IDLE, active = false, reply = "こんにちは")) // DONE
-        assertFalse(h.pages.sessionActive)
+        h.snapshot(snap(VoiceState.IDLE, active = false, reply = "こんにちは")) // DONE。往復の終わりの通知はまだ(会話は続く見込み)
+        assertTrue("往復の間も会話が続いている", h.pages.sessionActive)
         h.snapshot(snap(VoiceState.ERROR, active = false, error = VoiceErrorCode.NO_SPEECH))
+        h.endTurn(TurnOutcome.ERROR, "no_speech") // 続けない結果: 会話の終わり
         assertFalse(h.pages.sessionActive)
     }
 
@@ -467,6 +486,7 @@ class DaidaiVoiceTest {
         var t = h.sim.now
         repeat(30) { t += 1_000; assertFalse(h.pages.tick(t)) }
         h.snapshot(snap(VoiceState.IDLE, active = false))
+        h.endTurn(TurnOutcome.ERROR, "no_speech") // 往復の終わりの通知で会話が終わる(続きの無発話)
         t += 1_000; assertFalse("終わった後の最初の呼び出しから数え直す", h.pages.tick(t))
         t += 10_000
         assertTrue(h.pages.tick(t))
