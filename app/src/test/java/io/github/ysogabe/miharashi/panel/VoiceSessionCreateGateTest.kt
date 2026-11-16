@@ -82,4 +82,37 @@ class VoiceSessionCreateGateTest {
         assertEquals(1, r.audio.startCount)
         r.assertNoErrorShown()
     }
+
+    /**
+     * 指摘の窓: ワーカー内の照合を通ったあと、通信の層が照合する前に、取消(許可を進める)→ セッションのスレッドの finish(abortInFlight)が完了する。
+     * 通信の層へ渡した照合が取消を拾い、作成の要求は 0 回。古い世代なので結果は黙って捨てる(エラーも出さない)
+     */
+    @Test fun aCancelCompletedAfterTheWorkersGateButBeforeTheTransportChecksNeverSendsCreate() {
+        val r = Rig()
+        r.holdCreate()
+        r.bridge.beforeCurrentCheck = { r.cancel() } // 許可を進め、finish(abort・世代を進める)まで済ませる
+        assertTrue(r.worker.runHeld())
+        r.sim.settle()
+        assertEquals("作成の要求は 0 回", 0, r.bridge.created.size)
+        assertEquals("録音 0 回", 0, r.audio.startCount)
+        assertEquals("finish の abort は済んでいる", 1, r.bridge.aborts)
+        assertEquals(VoicePhase.IDLE, r.phase)
+        assertEquals(listOf(false to "cancelled"), r.listener.ended)
+        assertEquals("作成していないので DELETE もしない", emptyList<String>(), r.bridge.cancels)
+        r.assertNoErrorShown()
+    }
+
+    /** 同じ窓で、許可だけが進んだ(finish はまだ)並び: 世代は同じなので、取消として終え、エラーにしない */
+    @Test fun aPermitRevokedAfterTheWorkersGateButBeforeTheTransportChecksEndsAsCancelledWithoutError() {
+        val r = Rig()
+        r.holdCreate()
+        r.bridge.beforeCurrentCheck = { r.session.stopMicNow() }
+        assertTrue(r.worker.runHeld())
+        r.sim.settle()
+        assertEquals(0, r.bridge.created.size)
+        assertEquals(0, r.audio.startCount)
+        assertEquals(VoicePhase.IDLE, r.phase)
+        assertEquals(listOf(false to "cancelled"), r.listener.ended)
+        r.assertNoErrorShown()
+    }
 }

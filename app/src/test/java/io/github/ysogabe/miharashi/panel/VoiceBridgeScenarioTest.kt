@@ -794,9 +794,9 @@ class VoiceBridgeScenarioTest {
             entered.get()?.countDown()
         }
 
-        override fun createSession(req: SessionRequest): SessionInfo {
+        override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
             enter("create")
-            val info = inner.createSession(req)
+            val info = inner.createSession(req, isCurrent)
             holdCreate?.let {
                 createReturned.countDown()
                 it.await(10, TimeUnit.SECONDS)

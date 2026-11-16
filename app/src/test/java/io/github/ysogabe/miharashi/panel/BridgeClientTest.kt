@@ -19,6 +19,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
@@ -947,6 +948,89 @@ class BridgeClientTest {
         assertEquals(BridgeFailure.NETWORK, (first.get() as BridgeException).kind)
         assertEquals("要求は後の呼び出しの 1 つだけ", 1, server.requestCount)
         assertEquals("2", req().getHeader("X-Chunk-Seq"))
+    }
+
+    // ---- 作成の取消の照合(isCurrent): 世代が取り直されたあとの取消も、要求を送る前に止める
+
+    private fun assertCreateCancelledSendsNothing(c: BridgeClient, current: () -> Boolean) {
+        repeat(3) { server.enqueue(json("""{"session_id":"$sid"}""", 201)) }
+        val e = try {
+            c.createSession(request, current)
+            null
+        } catch (e: CreateCancelledException) {
+            e
+        }
+        assertNotNull("CreateCancelledException(BridgeException ではない)", e)
+        assertFalse("メッセージにトークンを入れない", e!!.message.orEmpty().contains(token))
+        Thread.sleep(150) // 遅れて要求が出ていないことを見る
+        assertEquals("取消のあとに作成の要求を送ってはいけない: 要求が 0", 0, server.requestCount)
+        assertEquals("接続の登録は残らない", 0, watchdogThreads())
+    }
+
+    private class FlipHooks(private val at: HookPoint?, private val atBody: Boolean, private val flip: () -> Unit) : BridgeClient.TestHooks {
+        override fun afterRegister(path: String) { if (at == HookPoint.AFTER_REGISTER) flip() }
+        override fun beforeConnect(path: String) { if (at == HookPoint.BEFORE_CONNECT) flip() }
+        override fun beforeBody(path: String) { if (atBody) flip() }
+    }
+
+    @Test fun createIsNotSentWhenTheCancelCheckIsAlreadyFalseAtRegistration() {
+        val c = client()
+        var reached = false
+        c.testHooks = object : BridgeClient.TestHooks {
+            override fun afterRegister(path: String) { reached = true }
+        }
+        assertCreateCancelledSendsNothing(c) { false }
+        assertFalse("登録の前に止まる(登録のロックの中の照合)", reached)
+    }
+
+    @Test fun createIsNotSentWhenTheCancelCheckTurnsFalseRightAfterRegistration() {
+        val current = AtomicBoolean(true)
+        val c = client()
+        c.testHooks = FlipHooks(HookPoint.AFTER_REGISTER, false) { current.set(false) }
+        assertCreateCancelledSendsNothing(c) { current.get() }
+    }
+
+    @Test fun createIsNotSentWhenTheCancelCheckTurnsFalseJustBeforeConnect() {
+        val current = AtomicBoolean(true)
+        val c = client()
+        c.testHooks = FlipHooks(HookPoint.BEFORE_CONNECT, false) { current.set(false) }
+        assertCreateCancelledSendsNothing(c) { current.get() }
+    }
+
+    @Test fun createIsNotSentWhenTheCancelCheckTurnsFalseJustBeforeTheBodyIsWritten() {
+        val current = AtomicBoolean(true)
+        val c = client()
+        c.testHooks = FlipHooks(null, true) { current.set(false) }
+        assertCreateCancelledSendsNothing(c) { current.get() }
+    }
+
+    /** 指摘の窓: 取消(許可を進める)→ abort(世代を進める)が済んだあとで呼び出しが世代を取る。世代の一致だけでは止まらないので、照合が止める */
+    @Test fun createStartedAfterTheAbortOfACancelIsStillStoppedByTheCancelCheck() {
+        val current = AtomicBoolean(true)
+        val c = client()
+        current.set(false) // 取消は先に許可を進め、
+        c.abortInFlight() // そのあとで abort する
+        assertCreateCancelledSendsNothing(c) { current.get() }
+    }
+
+    @Test fun createStartedAfterAnAbortStillGoesThroughWhileTheCancelCheckHolds() {
+        // 対照: 取消でない abort のあとに始まった作成は有効(新しい世代)。照合が true なら送る
+        server.enqueue(json("""{"session_id":"$sid"}""", 201))
+        val c = client()
+        c.abortInFlight()
+        assertEquals(sid, c.createSession(request) { true }.sessionId)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun cancelAndEndConversationDoNotDependOnTheCreateCancelCheck() {
+        // 中断の対象でない呼び出しには照合を持ち込まない(取消のあとでも送れる)
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val c = client()
+        c.abortInFlight()
+        c.cancel(sid)
+        c.endConversation("Yp0vAbCdEfGhIjKlMnOp-_")
+        assertEquals(2, server.requestCount)
     }
 
     @Test fun postIsSentExactlyOnceEvenWhenTheConnectionDropsAfterTheRequest() {

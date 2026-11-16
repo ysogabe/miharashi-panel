@@ -154,7 +154,7 @@ class VoiceSessionMicRaceTest {
             override val recording: Boolean get() = isRecording.get()
         }
         private val bridge = object : BridgeApi {
-            override fun createSession(req: SessionRequest) = SessionInfo("s-1")
+            override fun createSession(req: SessionRequest, isCurrent: () -> Boolean) = SessionInfo("s-1")
             override fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean) = ChunkAck(AckState.LISTENING, seq)
             override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
             override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)

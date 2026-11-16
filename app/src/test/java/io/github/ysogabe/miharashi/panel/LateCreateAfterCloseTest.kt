@@ -67,7 +67,7 @@ class LateCreateAfterCloseTest {
 
         /** 作成の要求を送った直後(応答が戻る前)に走らせる処理。「通信中に close が来る」並びの再現 */
         var duringCreate: (() -> Unit)? = null
-        override fun createSession(req: SessionRequest): SessionInfo {
+        override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
             creates += req
             duringCreate?.invoke()
             return SessionInfo("s-${creates.size}")
@@ -140,14 +140,20 @@ class LateCreateAfterCloseTest {
     }
 
     @Test fun withoutTheWrapperTheLateCreateIsNeverDeleted() {
-        // 対照: 包みがないと、ループの終了後に成功した作成は DELETE されない(ホストにセッションが残る)
+        // 対照: 包みがないと、ループの終了後に成功した作成は DELETE されない(ホストにセッションが残る)。
+        // 主の試験と同じく、作成の要求を送ったあと(duringCreate)で close する。close のあとにワーカーを動かすと、
+        // 作成の取消の照合で作成自体が止まり、「DELETE されない」が空振りになる
         val r = Rig(wrap = false)
         r.session.start(StartReason.SWIPE, null, false)
         r.sim.settle()
-        r.close()
-        r.sim.settle()
+        r.local.duringCreate = {
+            r.close()
+            r.sim.settle()
+            assertTrue(r.gated.terminated)
+        }
         r.worker.runPending()
         r.sim.settle()
+        assertEquals("作成の要求は実際に送られた(空振りではない)", 1, r.local.creates.size)
         assertEquals(1, r.gated.dropped)
         assertTrue("包みがなければ消えない(この試験が差を検出できることの確認)", r.local.cancels.isEmpty())
     }

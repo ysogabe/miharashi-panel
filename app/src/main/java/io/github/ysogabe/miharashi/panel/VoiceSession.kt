@@ -226,10 +226,13 @@ class VoiceSession(
         emit()
         val req = SessionRequest(clientId, appVersion, reason, noticeId, noSpeechS = request.noSpeechS, conversation = request.conversation)
         // ワーカーで実際に呼ぶ直前に、控えた許可を照合する(積んだあとに来た取消は、作成の要求を送る前に止める)。
-        // 照合を通ったあとに来た取消は、finish の abortInFlight と、遅れて届く 201 の後始末(S7: DELETE と会話の終わり)が回収する
+        // 通信の層(BridgeClient)にも同じ照合を渡す: 接続の登録(中断の世代を控えるのと同じロックの中)・通信の開始・本文を書く直前で見る。
+        // 取消は先に許可を進めてから abortInFlight するので、「世代を取り直されて中断が効かない」窓は無い。
+        // 最後の照合を通ったあと本文を書き始めるまでの一瞬だけ残り、それは finish の abortInFlight と、遅れて届く 201 の後始末(S7: DELETE と会話の終わり)が回収する
         runBlocking({
             if (micPermit.get() != permit) throw CreateCancelledException()
-            bridge.createSession(req)
+            // 通信の層でも、接続の登録・通信の開始・本文の送信の直前に同じ照合をする(ここで通った後に来た取消も、要求を送る前に止める)
+            bridge.createSession(req) { micPermit.get() == permit }
         }) { r -> onCreated(g, r) }
     }
 
@@ -876,9 +879,6 @@ class VoiceSession(
         }
         return if (n == 0) 0.0 else sqrt(sum / n)
     }
-
-    /** ワーカーが作成を呼ぶ直前に、開始の許可が取り消されていた(作成の要求は送っていない)。ハンドル・本文は持たない */
-    private class CreateCancelledException : Exception("create cancelled")
 
     companion object {
         const val DEFAULT_CLIENT_ID = "echo-show-5"

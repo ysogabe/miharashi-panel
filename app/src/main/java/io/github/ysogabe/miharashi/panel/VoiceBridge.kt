@@ -132,12 +132,21 @@ class BridgeException(
 }
 
 /**
+ * 作成の呼び出しが、**作成の要求をホストへ送る前に**取り消されたことを表す([BridgeApi.createSession] の `isCurrent` が false を返した)。
+ * 通信の失敗ではない([BridgeException] にしない)。[VoiceSession] はエラーを表示せず、同じ世代なら取消として終え、古い世代なら黙って捨てる。
+ * メッセージ・原因にハンドルや本文を入れない(スタックも持たない)。
+ */
+class CreateCancelledException : RuntimeException("create cancelled", null, false, false)
+
+/**
  * ブリッジとの通信(設計書 §5.4)。**すべてブロッキング**で、[VoiceSession] のワーカー([SessionWorker])から呼ばれる。
  * 同時に複数のスレッドから呼ばれうる(SSE の `events` は 1 セッションの間ずっと 1 本占有し、その間に `sendAudio` も走る)。
  *
  * T7 が守ること:
  * - 失敗は [BridgeException] で投げる(通信失敗・タイムアウト・中断 = `NETWORK`)。それ以外の例外も VoiceSession は通信失敗として扱う。
  * - `createSession` は応答の `session_id` を**検証せず**そのまま返してよい(VoiceSession が検証し、不正なら作成の失敗にする)。
+ *   `isCurrent` は「この作成をまだ送ってよいか」の照合(取消が来ると false。**ブロックせず・速く**返す純粋な読み取り)。実装は作成の要求を送る前に見て、
+ *   false なら送らず [CreateCancelledException] で投げる。`isCurrent` を持たない `createSession(req)` は常に true と同じ。
  * - `sendAudio`: 本文は生の PCM。`final` のときだけ `X-Chunk-Final: 1`。本文は 640〜16,000 バイト(最終チャンクも同じ長さに収めてくる)。
  *   `200` の応答の `state` が未知なら `MALFORMED`。`409` は本文の `error.code` で `ENDED` / `OUT_OF_ORDER` / `SEQ_CONFLICT` に分ける。
  * - `events`: **ブロッキング**。購読が終わる(EOF・切断・`abortInFlight`)まで戻らない。[BridgeEvent] を seq の順に `onEvent` へ渡す(別スレッドで呼んでよい)。
@@ -153,7 +162,8 @@ class BridgeException(
  * - トークン・音声・認識テキストをログ・例外メッセージに出さない。
  */
 interface BridgeApi {
-    fun createSession(req: SessionRequest): SessionInfo
+    fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo
+
     fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean): ChunkAck
     fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit)
     fun fetchReplyAudio(id: String, index: Int): ByteArray
@@ -169,3 +179,9 @@ interface BridgeApi {
 
     fun abortInFlight()
 }
+
+/**
+ * 取消の照合を持たない作成(常に「まだ送ってよい」)。メンバーではなく拡張にしているのは、`BridgeApi by inner` の包みが
+ * インターフェースの既定メソッドを内側へ直接委譲して、包みの `createSession(req, isCurrent)` を飛ばすのを防ぐため。
+ */
+fun BridgeApi.createSession(req: SessionRequest): SessionInfo = createSession(req) { true }

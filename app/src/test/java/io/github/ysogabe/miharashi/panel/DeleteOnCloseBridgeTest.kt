@@ -11,7 +11,7 @@ class DeleteOnCloseBridgeTest {
         var creates = 0
         var closedAtCreate: (() -> Boolean)? = null
         val order = mutableListOf<String>()
-        override fun createSession(req: SessionRequest): SessionInfo {
+        override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
             creates++
             order += "create"
             if (createThrows) throw BridgeException(BridgeFailure.NETWORK, 0, null, null)
@@ -131,7 +131,7 @@ class DeleteOnCloseBridgeTest {
         val closeDone = CountDownLatch(1)
         val inner = object : BridgeApi by Inner() {
             val deleted = java.util.concurrent.CopyOnWriteArrayList<String>()
-            override fun createSession(req: SessionRequest): SessionInfo {
+            override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
                 created.countDown() // ホストは作成した。結果が呼び出し元に届く前に close を完了させる
                 assertTrue(closeDone.await(10, TimeUnit.SECONDS))
                 return SessionInfo("s-1")
@@ -155,7 +155,7 @@ class DeleteOnCloseBridgeTest {
         val registeredDone = CountDownLatch(1)
         val inner = Inner()
         val b = DeleteOnCloseBridge(object : BridgeApi by inner {
-            override fun createSession(req: SessionRequest) = inner.createSession(req)
+            override fun createSession(req: SessionRequest, isCurrent: () -> Boolean) = inner.createSession(req, isCurrent)
         })
         val worker = Thread {
             b.createSession(req)
@@ -176,7 +176,7 @@ class DeleteOnCloseBridgeTest {
         val cancels = mutableListOf<String>()
         val ends = mutableListOf<String>()
         var endThrows = false
-        override fun createSession(req: SessionRequest) = SessionInfo(id, conversation = ConversationInfo(handle, true, true))
+        override fun createSession(req: SessionRequest, isCurrent: () -> Boolean) = SessionInfo(id, conversation = ConversationInfo(handle, true, true))
         override fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean) = ChunkAck(AckState.LISTENING, seq)
         override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
         override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)

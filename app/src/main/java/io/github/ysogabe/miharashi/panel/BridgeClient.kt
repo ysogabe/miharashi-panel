@@ -30,6 +30,11 @@ import java.util.IdentityHashMap
  * 取りこぼさない仕組み(世代): クライアントは中断の世代(`epoch`)を持ち、abort はロックの中で世代を進めて、登録済みの接続をすべて切る。
  * 各呼び出しは始まるときに世代を取り、**接続の登録と、通信を始める直前・接続が済んだ直後(本文を送る前)の 3 回、ロックの中で世代の一致を確かめる**。
  * 一致しなければ(= その呼び出しが始まってから abort が来た)通信せず、接続を切って `NETWORK`(取消)で投げる。
+ *
+ * 作成([createSession])は、さらに呼び出し側の取消の照合 `isCurrent` を同じ 3 か所で見る(登録は世代の一致と**同じロックの中**)。false なら通信せず
+ * [CreateCancelledException] で投げる。取消は「先に許可を進め、そのあとで abort」なので、abort が済んで世代が進んだあとに呼び出しが世代を取り直しても、
+ * この照合が false を返して止める(世代だけだと、取り直した世代では中断が効かない)。照合を通ってから本文を書き始める(出力を取る)までの一瞬だけは残り、
+ * それは送り始めたあとの取消として、呼び出し側の後始末(遅れて届く 201 の DELETE と会話の終わり)が回収する。`isCurrent` はロックの中で呼ぶので、ブロックしないこと。
  * 未接続の `HttpURLConnection.disconnect()` は、その後の接続を禁止しない(JDK は何もしない)ので、`disconnect` だけには頼らない:
  * 接続前の abort は直前の確認が、`connect()` の最中の abort は接続が済んだ直後の確認が拾い、いずれも本文・要求の送信より前に止める。
  * 接続が済んだあとの abort は、登録済みの接続への `disconnect` が効く。abort より**後**に始まった呼び出しは新しい世代なので有効。
@@ -74,6 +79,9 @@ class BridgeClient(
 
         /** 通信を始める直前の確認のあと、`connect()` の直前 */
         fun beforeConnect(path: String) {}
+
+        /** `connect()` が済んだあと、本文を書く直前の確認より前 */
+        fun beforeBody(path: String) {}
     }
 
     @Volatile internal var testHooks: TestHooks? = null
@@ -97,7 +105,7 @@ class BridgeClient(
     // =========================================================================================
     // セッションの作成(§5.2.1)
 
-    override fun createSession(req: SessionRequest): SessionInfo {
+    override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
         val body = JSONObject()
             .put("client", JSONObject().put("id", req.clientId).put("app_version", req.appVersion))
             .put("reason", req.reason.wire)
@@ -115,7 +123,7 @@ class BridgeClient(
             .toString().toByteArray(Charsets.UTF_8)
         return exchange(
             "POST", "/v1/voice/sessions", ACCEPT_JSON, abortable = true, totalMs = createTimeoutMs, readTimeoutMs = readMs(createTimeoutMs),
-            body = body, contentType = "application/json",
+            body = body, contentType = "application/json", isCurrent = isCurrent,
         ) { c ->
             val code = c.responseCode
             if (code != 201) failStatus(c, code, forChunk = false)
@@ -364,6 +372,7 @@ class BridgeClient(
         headers: List<Pair<String, String>> = emptyList(),
         body: ByteArray? = null,
         contentType: String? = null,
+        isCurrent: (() -> Boolean)? = null,
         handle: (HttpURLConnection) -> T,
     ): T {
         if (!configured) throw BridgeException(BridgeFailure.CLIENT_ERROR) // 通信しない(未設定・不正なトークン)
@@ -387,23 +396,35 @@ class BridgeClient(
                 c.setFixedLengthStreamingMode(body.size) // 自動の再送をさせない(再送は VoiceSession が 1 回だけ)
             }
             if (abortable) {
+                // 世代の一致と取消の照合を**同じロックの中**で見る。取消は先に許可を進めてから abortInFlight(世代を進める)するので、
+                // 世代を取り直したあとで来た取消も、ここ(か以後の照合)で必ず拾える
+                var cancelled = false
                 val registered = synchronized(lock) {
-                    if (epoch != startEpoch) false else { active.add(c); true }
+                    if (epoch != startEpoch) false
+                    else if (isCurrent != null && !isCurrent()) { cancelled = true; false }
+                    else { active.add(c); true }
                 }
+                if (cancelled) throw CreateCancelledException()
                 if (!registered) throw IOException("aborted") // 呼び出しが始まってから登録するまでの間に abort が来た
                 testHooks?.afterRegister(path)
-                ensureNotAborted(c, startEpoch) // 通信を始める直前の確認
+                ensureNotAborted(c, startEpoch, isCurrent) // 通信を始める直前の確認
             }
             val io = {
                 if (abortable) testHooks?.beforeConnect(path)
                 c.connect() // 要求はまだ送らない(JDK は getOutputStream / getInputStream で送る)
-                if (abortable) ensureNotAborted(c, startEpoch) // connect の最中に来た abort(disconnect は効かない)を、本文を送る前に拾う
+                if (abortable) {
+                    testHooks?.beforeBody(path)
+                    // connect の最中に来た abort(disconnect は効かない)と取消を、本文を書く前に拾う(固定長のストリーミングは、出力を取る時点で要求を送る)
+                    ensureNotAborted(c, startEpoch, isCurrent)
+                }
                 if (body != null) c.outputStream.use { it.write(body) }
                 handle(c)
             }
             return if (totalMs != null) BridgeHttp.withDeadline(c, totalMs, io) else io()
         } catch (e: Fail) {
             throw e.error
+        } catch (e: CreateCancelledException) {
+            throw e // 取消(通信の失敗ではない)。要求は送っていない
         } catch (e: BridgeException) {
             throw e
         } catch (e: HttpRetryException) {
@@ -425,14 +446,19 @@ class BridgeClient(
         }
     }
 
-    /** 世代が変わっていれば(この呼び出しが始まってから abort が来た)、接続を切って中断として投げる。 */
-    private fun ensureNotAborted(c: HttpURLConnection, startEpoch: Int) {
+    /**
+     * 世代が変わっていれば(この呼び出しが始まってから abort が来た)、接続を切って中断として投げる。
+     * `isCurrent` があり false なら(作成の取消)、接続を切って [CreateCancelledException] で投げる。どちらも要求を送る前。
+     */
+    private fun ensureNotAborted(c: HttpURLConnection, startEpoch: Int, isCurrent: (() -> Boolean)? = null) {
         val aborted = synchronized(lock) { epoch != startEpoch }
-        if (!aborted) return
+        val cancelled = !aborted && isCurrent != null && !isCurrent()
+        if (!aborted && !cancelled) return
         try {
             c.disconnect()
         } catch (_: RuntimeException) {
         }
+        if (cancelled) throw CreateCancelledException()
         throw IOException("aborted")
     }
 

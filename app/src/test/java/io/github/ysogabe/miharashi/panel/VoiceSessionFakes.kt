@@ -129,7 +129,13 @@ class FakeBridge(private val sim: Sim, private val log: MutableList<String>) : B
         s.forEach { worker.complete(it.pending, result) }
     }
 
-    override fun createSession(req: SessionRequest): SessionInfo {
+    /** 通信の層が取消の照合([isCurrent])を見る直前に走らせる処理。「VoiceSession の照合を通ったあと、通信の層が見る前に取消が完了する」並びの再現 */
+    var beforeCurrentCheck: (() -> Unit)? = null
+
+    override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
+        // 本物の通信の層と同じ契約: 作成の要求を送る(= 記録する)前に照合し、false なら送らずに取消で投げる
+        beforeCurrentCheck?.invoke()
+        if (!isCurrent()) throw CreateCancelledException()
         log += "create"
         created += req
         hostLog.clear() // ホストのイベントの記録はセッションごと

@@ -40,8 +40,8 @@ class DeleteOnCloseBridge(private val inner: BridgeApi) : BridgeApi by inner {
 
     val isClosed: Boolean get() = synchronized(lock) { closed }
 
-    override fun createSession(req: SessionRequest): SessionInfo {
-        val info = inner.createSession(req)
+    override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
+        val info = inner.createSession(req, isCurrent) // 取消の照合はそのまま内側(通信の層)へ渡す
         val handle = info.conversation?.handle
         val validId = VoiceLimits.SESSION_ID_REGEX.matches(info.sessionId)
         val closedNow = synchronized(lock) {
