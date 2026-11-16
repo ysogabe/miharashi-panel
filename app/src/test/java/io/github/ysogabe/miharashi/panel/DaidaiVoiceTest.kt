@@ -7,6 +7,13 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
+/** 終了の理由の文字列から、通知に添える往復の結果(この試験の関心は歯止めの記録で、結果は見ない) */
+private fun outcomeOf(reason: String) = when (reason) {
+    "done" -> TurnOutcome.PLAYED
+    "cancelled" -> TurnOutcome.CANCELLED
+    else -> TurnOutcome.ERROR
+}
+
 /** 呼び出しを記録するだけの [VoiceRuntime]。セッションのスレッドからの通知は [listener] を直接呼んで再現する。 */
 private class FakeRuntime(val settings: DaidaiSettings, val listener: VoiceSessionListener) : VoiceRuntime {
     class Start(val reason: StartReason, val noticeId: String?, val auto: Boolean)
@@ -23,6 +30,9 @@ private class FakeRuntime(val settings: DaidaiSettings, val listener: VoiceSessi
     }
 
     override fun retry() { log += "retry"; retries++ }
+    override fun start(request: TurnRequest) { log += "startTurn" }
+    override fun retry(request: TurnRequest) { log += "retryTurn" }
+    override fun endConversation(handle: String) { log += "endConversation" }
     override fun cancel() { log += "cancel"; cancels++ }
     override fun stopMicNow() { log += "stopMic"; stopMics++ }
     override fun close() { log += "close"; closed = true }
@@ -107,9 +117,9 @@ class DaidaiVoiceTest {
         fun autoCycle(rev: Long, id: String, endReason: String = "done") {
             autoSwitch(rev, id)
             advance(DaidaiVoice.ENTRY_DEBOUNCE_MS)
-            rt.listener.onMicOpened(true)
+            rt.listener.onMicOpened(true, false, TurnTag.NONE)
             sim.settle()
-            rt.listener.onEnded(true, endReason)
+            rt.listener.onEnded(true, endReason, outcomeOf(endReason), TurnTag.NONE)
             sim.settle()
             swipeToA()
         }
@@ -250,7 +260,7 @@ class DaidaiVoiceTest {
         assertEquals("n1", s.noticeId)
         assertTrue(s.auto)
         // 実際に開いた(onMicOpened)ときに数える: 開く前には数えない
-        h.rt.listener.onEnded(true, "cancelled") // 開かないまま終わった
+        h.rt.listener.onEnded(true, "cancelled", outcomeOf("cancelled"), TurnTag.NONE) // 開かないまま終わった
         h.sim.settle()
         h.swipeToA()
         h.advance(10_000)
@@ -301,7 +311,7 @@ class DaidaiVoiceTest {
         h.advance(6 * 60_000L)
         h.swipeToB() // 利用者の手動
         h.advance(300)
-        h.rt.listener.onEnded(false, "done")
+        h.rt.listener.onEnded(false, "done", outcomeOf("done"), TurnTag.NONE)
         h.sim.settle()
         h.swipeToA()
         h.advance(6 * 60_000L)
@@ -329,7 +339,7 @@ class DaidaiVoiceTest {
         h.ready()
         h.autoSwitch(2, "n1")
         h.advance(300)
-        h.rt.listener.onEnded(true, "no_speech")
+        h.rt.listener.onEnded(true, "no_speech", outcomeOf("no_speech"), TurnTag.NONE)
         h.sim.settle()
         h.swipeToA()
         h.advance(6 * 60_000L)
@@ -549,7 +559,7 @@ class DaidaiVoiceTest {
         h.autoSwitch(2, "n1")
         h.advance(300)
         h.snapshot(snap(VoiceState.ERROR, error = VoiceErrorCode.NO_SPEECH))
-        h.rt.listener.onEnded(true, "no_speech")
+        h.rt.listener.onEnded(true, "no_speech", outcomeOf("no_speech"), TurnTag.NONE)
         h.advance(60_000)
         assertEquals(0, h.rt.retries)
         assertEquals(1, h.rt.starts.size)
@@ -560,13 +570,13 @@ class DaidaiVoiceTest {
         h.ready()
         h.autoSwitch(2, "n1")
         h.advance(300)
-        h.rt.listener.onMicOpened(true) // 自動起動としてはここだけ数える
+        h.rt.listener.onMicOpened(true, false, TurnTag.NONE) // 自動起動としてはここだけ数える
         h.sim.settle()
         h.snapshot(snap(VoiceState.ERROR, error = VoiceErrorCode.HOST_UNREACHABLE))
-        h.rt.listener.onEnded(true, "host_unreachable")
+        h.rt.listener.onEnded(true, "host_unreachable", outcomeOf("host_unreachable"), TurnTag.NONE)
         h.advance(4 * 60_000L)
         h.voice.onErrorTapped() // 利用者のタップ(autoStarted=false)
-        h.rt.listener.onMicOpened(false)
+        h.rt.listener.onMicOpened(false, false, TurnTag.NONE)
         h.sim.settle()
         h.swipeToA()
         h.advance(60_000L + 2_000) // 最初の起動から 5 分を過ぎた
@@ -582,7 +592,7 @@ class DaidaiVoiceTest {
         h.autoSwitch(2, "n1")
         h.advance(300)
         h.snapshot(snap(VoiceState.ERROR, error = VoiceErrorCode.HOST_UNREACHABLE))
-        h.rt.listener.onMicOpened(true) // 開いた(自動)。main への配送はまだ
+        h.rt.listener.onMicOpened(true, false, TurnTag.NONE) // 開いた(自動)。main への配送はまだ
         h.voice.onErrorTapped() // 配送の前に、利用者のタップで手動のセッションへ切り替わる
         h.sim.settle()
         h.swipeToA()
@@ -606,7 +616,7 @@ class DaidaiVoiceTest {
         h.advance(300)
         assertTrue(h.rt !== old)
         assertTrue(h.rt.starts.single().auto)
-        old.listener.onMicOpened(false) // 古い runtime で開いていた手動のマイクの通知が、いま届く
+        old.listener.onMicOpened(false, false, TurnTag.NONE) // 古い runtime で開いていた手動のマイクの通知が、いま届く
         h.sim.settle()
         h.swipeToA()
         h.advance(60_000)
@@ -619,7 +629,7 @@ class DaidaiVoiceTest {
         h.ready()
         h.autoSwitch(2, "n1")
         h.advance(300)
-        h.rt.listener.onMicOpened(true) // 開いた時刻 T。main への配送は 2 分遅れる
+        h.rt.listener.onMicOpened(true, false, TurnTag.NONE) // 開いた時刻 T。main への配送は 2 分遅れる
         h.sim.tick(2 * 60_000L)
         h.sim.settle()
         h.swipeToA()
@@ -637,7 +647,7 @@ class DaidaiVoiceTest {
         h.voice.stop() // 背面: runtime を破棄
         val rendered = h.rendered.size
         old.listener.onSnapshot(snap(VoiceState.LISTENING, active = true, mic = true, transcript = "旧"))
-        old.listener.onMicOpened(true) // 破棄の前に実際に開いていたマイク
+        old.listener.onMicOpened(true, false, TurnTag.NONE) // 破棄の前に実際に開いていたマイク
         h.sim.settle()
         assertEquals("古い runtime のスナップショットは画面に出さない", rendered, h.rendered.size)
         assertFalse(h.pages.sessionActive)
@@ -705,14 +715,14 @@ class DaidaiVoiceTest {
         val h = Harness()
         h.startSwipeSession()
         h.toneThrows = true
-        h.rt.listener.onMicOpened(false) // 例外を投げたらセッションが終わってしまう
+        h.rt.listener.onMicOpened(false, false, TurnTag.NONE) // 例外を投げたらセッションが終わってしまう
         assertEquals(1, h.tones)
     }
 
     @Test fun theStartToneIsPlayedOnTheCallerThreadWhenTheMicOpens() {
         val h = Harness()
         h.startSwipeSession()
-        h.rt.listener.onMicOpened(false)
+        h.rt.listener.onMicOpened(false, false, TurnTag.NONE)
         assertEquals("セッションのスレッドで即座に鳴らす(メインへの post を待たない)", 1, h.tones)
     }
 

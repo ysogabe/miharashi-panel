@@ -1004,6 +1004,192 @@ class BridgeClientTest {
     }
 
     // =========================================================================================
+    // 会話(段階 2a-P。設計書(段階 2)§6.1)
+
+    private val handle = "Yp0vAbCdEfGhIjKlMnOp-_" // 22 文字
+
+    private fun createBody(r: SessionRequest): String {
+        server.enqueue(json("""{"session_id":"$sid"}""", 201))
+        client().createSession(r)
+        return req().body.readUtf8()
+    }
+
+    private fun createInfo(responseBody: String): SessionInfo {
+        server.enqueue(json(responseBody, 201))
+        return client().createSession(request)
+    }
+
+    @Test fun createOmitsConversationWhenTheRequestHasNone_byteForByte() {
+        val body = createBody(request)
+        assertFalse("conversation を書かない", JSONObject(body).has("conversation"))
+        assertFalse(body.contains("conversation"))
+        // 今までと同じバイト列(org.json の並びは実装の定める順。今までの作り方を同じ実装でもう一度組んで比べる)
+        val legacy = JSONObject()
+            .put("client", JSONObject().put("id", "echo-show-5").put("app_version", "0.3.0"))
+            .put("reason", "swipe")
+            .put("notice_id", JSONObject.NULL)
+            .put("audio", JSONObject().put("encoding", "pcm_s16le").put("sample_rate", 16_000).put("channels", 1))
+            .put("limits", JSONObject().put("no_speech_s", 10L).put("max_utterance_s", 30L))
+            .toString()
+        assertEquals(legacy, body)
+    }
+
+    @Test fun createSendsAnEmptyConversationObjectForANewConversation() {
+        val o = JSONObject(createBody(request.copy(conversation = ConversationParam())))
+        val c = o.getJSONObject("conversation")
+        assertEquals(0, c.length())
+        assertFalse(c.has("handle")) // JSON の null も送らない
+    }
+
+    @Test fun createSendsTheHandleOfAFollowTurn() {
+        val o = JSONObject(createBody(request.copy(conversation = ConversationParam(handle), noSpeechS = 6)))
+        assertEquals(handle, o.getJSONObject("conversation").getString("handle"))
+        assertEquals(1, o.getJSONObject("conversation").length())
+        assertEquals(6, o.getJSONObject("limits").getInt("no_speech_s"))
+    }
+
+    @Test fun createReadsTheConversationOfTheResponse() {
+        val info = createInfo("""{"session_id":"$sid","conversation":{"handle":"$handle","context":true,"continue":true},"brain":{"name":"llm-vl"}}""")
+        assertEquals(ConversationInfo(handle, true, true), info.conversation)
+        val no = createInfo("""{"session_id":"$sid","conversation":{"handle":"$handle","context":false,"continue":false}}""")
+        assertEquals(ConversationInfo(handle, false, false), no.conversation)
+    }
+
+    @Test fun anAbsentOrNonObjectConversationIsNull() {
+        assertNull(createInfo("""{"session_id":"$sid"}""").conversation)
+        assertNull(createInfo("""{"session_id":"$sid","conversation":null}""").conversation)
+        assertNull(createInfo("""{"session_id":"$sid","conversation":"$handle"}""").conversation)
+        assertNull(createInfo("""{"session_id":"$sid","conversation":[{"handle":"$handle"}]}""").conversation)
+        assertNull(createInfo("""{"session_id":"$sid","conversation":true}""").conversation)
+        assertNull(createInfo("""{"session_id":"$sid","conversation":7}""").conversation)
+    }
+
+    @Test fun onlyAHandleThatFullyMatchesTheFormatIsTaken() {
+        fun handleOf(literal: String) = createInfo("""{"session_id":"$sid","conversation":{"handle":$literal}}""").conversation!!.handle
+        assertEquals(handle, handleOf("\"$handle\""))
+        assertEquals("A".repeat(22), handleOf("\"${"A".repeat(22)}\""))
+        assertNull("21 文字", handleOf("\"${"A".repeat(21)}\""))
+        assertNull("23 文字", handleOf("\"${"A".repeat(23)}\""))
+        assertNull("空", handleOf("\"\""))
+        assertNull("記号入り", handleOf("\"Yp0vAbCdEfGhIjKlMnOp+/\""))
+        assertNull("空白入り", handleOf("\"Yp0vAbCdEfGhIjKlMnOp- \""))
+        assertNull("パスのように見える", handleOf("\"../Yp0vAbCdEfGhIjKlMnOp\""))
+        assertNull("末尾に改行", handleOf("\"${handle}\\n\""))
+        assertNull("数値", handleOf("1234567890123456789012"))
+        assertNull("null", handleOf("null"))
+        assertNull("配列", handleOf("[\"$handle\"]"))
+        assertNull("オブジェクト", handleOf("""{"v":"$handle"}"""))
+        assertNull("真偽値", handleOf("true"))
+    }
+
+    @Test fun anInvalidHandleIsTreatedLikeNoHandleButKeepsTheRest() {
+        val c = createInfo("""{"session_id":"$sid","conversation":{"handle":"short","context":true,"continue":false}}""").conversation!!
+        assertNull(c.handle)
+        assertEquals(true, c.context)
+        assertFalse(c.continueAllowed)
+    }
+
+    @Test fun continueIsFalseOnlyForABooleanFalse() {
+        fun cont(literal: String?): Boolean {
+            val extra = if (literal == null) "" else ",\"continue\":$literal"
+            return createInfo("""{"session_id":"$sid","conversation":{"handle":"$handle"$extra}}""").conversation!!.continueAllowed
+        }
+        assertFalse(cont("false"))
+        assertTrue(cont("true"))
+        assertTrue("省略", cont(null))
+        assertTrue("文字列の false", cont("\"false\""))
+        assertTrue("0", cont("0"))
+        assertTrue("null", cont("null"))
+        assertTrue("配列", cont("[false]"))
+    }
+
+    @Test fun contextIsABooleanOrNull() {
+        fun ctx(literal: String) =
+            createInfo("""{"session_id":"$sid","conversation":{"handle":"$handle","context":$literal}}""").conversation!!.context
+        assertEquals(true, ctx("true"))
+        assertEquals(false, ctx("false"))
+        assertNull(ctx("\"true\""))
+        assertNull(ctx("1"))
+        assertNull(ctx("null"))
+    }
+
+    @Test fun anObjectConversationWithoutFieldsMeansNoHandleAndContinueAllowed() {
+        assertEquals(ConversationInfo(null, null, true), createInfo("""{"session_id":"$sid","conversation":{}}""").conversation)
+    }
+
+    @Test fun endConversationPostsTheHandleInTheBodyNotInTheUrl() {
+        server.enqueue(MockResponse().setResponseCode(204))
+        client().endConversation(handle)
+        val r = req()
+        assertEquals("POST", r.method)
+        assertEquals("/v1/voice/conversations/end", r.path)
+        assertFalse("URL にハンドルを入れない", r.requestUrl.toString().contains(handle))
+        assertEquals("Bearer $token", r.getHeader("Authorization"))
+        assertTrue(r.getHeader("Content-Type")!!.startsWith("application/json"))
+        assertEquals("""{"handle":"$handle"}""", r.body.readUtf8())
+    }
+
+    @Test fun endConversationAccepts204And404AndFailsOtherwise() {
+        val c = client()
+        server.enqueue(MockResponse().setResponseCode(204))
+        c.endConversation(handle)
+        server.enqueue(err(404, "not_found")) // 旧ホスト
+        c.endConversation(handle)
+        server.enqueue(err(500, "oops"))
+        assertEquals(BridgeFailure.SERVER_ERROR, failure { c.endConversation(handle) }.kind)
+        server.enqueue(err(400, "bad_request"))
+        assertEquals(BridgeFailure.CLIENT_ERROR, failure { c.endConversation(handle) }.kind)
+        server.enqueue(err(401, "unauthorized"))
+        assertEquals(BridgeFailure.CLIENT_ERROR, failure { c.endConversation(handle) }.kind)
+        repeat(5) { req() }
+    }
+
+    @Test fun endConversationRejectsAMalformedHandleWithoutSendingAnythingOrQuotingIt() {
+        val bad = listOf("", "short", "A".repeat(23), "Yp0vAbCdEfGhIjKlMnOp+/", "$handle\n", "../../x?y=Yp0vAbCdEfGh", "日本語".repeat(8))
+        val c = client()
+        for (h in bad) {
+            try {
+                c.endConversation(h)
+                fail("IllegalArgumentException のはず: $h")
+            } catch (e: IllegalArgumentException) {
+                assertFalse("メッセージにハンドルを入れない", (e.message ?: "").contains(h) && h.isNotEmpty())
+            }
+        }
+        assertEquals("1 回も通信しない", 0, server.requestCount)
+    }
+
+    @Test fun endConversationIsNotInterruptedByAbortInFlight() {
+        val c = client()
+        c.abortInFlight()
+        server.enqueue(MockResponse().setResponseCode(204))
+        c.endConversation(handle)
+        assertEquals("POST", req().method)
+    }
+
+    @Test fun endConversationUsesTheCancelDeadline() {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val t0 = System.nanoTime()
+        assertEquals(BridgeFailure.NETWORK, failure { client(cancelMs = 400).endConversation(handle) }.kind)
+        val elapsed = (System.nanoTime() - t0) / 1_000_000
+        assertTrue("取消と同じ短い期限($elapsed ms)", elapsed in 300..2_500)
+        req()
+    }
+
+    @Test fun nothingPrintsTheHandle() {
+        val info = createInfo("""{"session_id":"$sid","conversation":{"handle":"$handle","context":true,"continue":true}}""")
+        assertFalse(info.toString().contains(handle))
+        assertFalse(info.conversation.toString().contains(handle))
+        assertFalse(request.copy(conversation = ConversationParam(handle)).toString().contains(handle))
+        assertFalse(ConversationParam(handle).toString().contains(handle))
+        // 通信に失敗した例外にも、診断の文字列にも入らない
+        server.enqueue(err(500, "oops"))
+        val e = failure { client().endConversation(handle) }
+        assertFalse((e.message ?: "").contains(handle))
+        assertFalse(VoiceFailures.diagnostics("end", e).contains(handle))
+        req()
+    }
+
+    // =========================================================================================
     // 取消(§5.2.5)
 
     @Test fun cancelSendsDeleteAndAccepts204And404() {

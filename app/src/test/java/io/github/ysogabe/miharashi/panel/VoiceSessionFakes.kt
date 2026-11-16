@@ -88,6 +88,10 @@ class FakeBridge(private val sim: Sim, private val log: MutableList<String>) : B
     val created = mutableListOf<SessionRequest>()
     val chunks = mutableListOf<SentChunk>()
     val cancels = mutableListOf<String>()
+
+    /** `endConversation` に渡されたハンドル(呼ばれた順) */
+    val conversationEnds = mutableListOf<String>()
+    var endConversationReply: Resp<Unit> = ok(Unit)
     val eventOpens = mutableListOf<Int?>()
     val fetches = mutableListOf<Int>()
     var aborts = 0
@@ -169,6 +173,13 @@ class FakeBridge(private val sim: Sim, private val log: MutableList<String>) : B
         cancels += id
         info = FakeWorker.CallInfo(cancelReply.latencyMs, abortable = false)
         cancelReply.result()
+    }
+
+    override fun endConversation(handle: String) {
+        log += "endConversation"
+        conversationEnds += handle
+        info = FakeWorker.CallInfo(endConversationReply.latencyMs, abortable = false)
+        endConversationReply.result()
     }
 
     override fun abortInFlight() {
@@ -327,7 +338,15 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
     val snaps = mutableListOf<VoiceSnapshot>()
     val micOpenedAt = mutableListOf<Long>()
     val micOpenedAuto = mutableListOf<Boolean>()
+    val micOpenedFollow = mutableListOf<Boolean>()
+    val micOpenedTags = mutableListOf<TurnTag>()
     val ended = mutableListOf<Pair<Boolean, String>>()
+    val outcomes = mutableListOf<TurnOutcome>()
+    val endedTags = mutableListOf<TurnTag>()
+
+    /** [onConversation] で受け取った(タグ, 情報)。順序つき */
+    val conversations = mutableListOf<Pair<TurnTag, ConversationInfo>>()
+    var throwOnConversation = false
 
     /** true を返したスナップショットでは、記録したあとに例外を投げる(リスナーの失敗の再現) */
     var throwOnSnapshot: ((VoiceSnapshot) -> Boolean)? = null
@@ -340,16 +359,26 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
         if (throwOnSnapshot?.invoke(snapshot) == true) throw IllegalStateException("snapshot failed: ${snapshot.state}")
     }
 
-    override fun onMicOpened(autoStarted: Boolean) {
+    override fun onConversation(tag: TurnTag, info: ConversationInfo) {
+        log += "conversation"
+        conversations += tag to info
+        if (throwOnConversation) throw IllegalStateException("conversation failed")
+    }
+
+    override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag) {
         log += "micOpened"
         micOpenedAt += sim.now
         micOpenedAuto += autoStarted
+        micOpenedFollow += follow
+        micOpenedTags += tag
         if (throwOnMicOpened) throw IllegalStateException("tone failed: secret-listener-message")
     }
 
-    override fun onEnded(autoStarted: Boolean, reason: String) {
+    override fun onEnded(autoStarted: Boolean, reason: String, outcome: TurnOutcome, tag: TurnTag) {
         log += "ended:$reason"
         ended += autoStarted to reason
+        outcomes += outcome
+        endedTags += tag
         if (throwOnEnded) throw IllegalStateException("ended failed")
     }
 }
@@ -385,6 +414,12 @@ class Rig(guardMs: Long = VoiceLimits.START_TONE_GUARD_MS, sessionMaxMs: Long = 
 
     fun cancel() {
         session.cancel()
+        sim.settle()
+    }
+
+    /** 往復の要求で始める([start] の [TurnRequest] 版) */
+    fun startTurn(request: TurnRequest) {
+        session.start(request)
         sim.settle()
     }
 

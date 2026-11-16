@@ -22,6 +22,9 @@ class DaidaiVoiceSessionTest {
     private class Runtime(val session: VoiceSession, val audio: FakeAudio) : VoiceRuntime {
         override fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) = session.start(reason, noticeId, autoStarted)
         override fun retry() = session.retry()
+        override fun start(request: TurnRequest) = session.start(request)
+        override fun retry(request: TurnRequest) = session.retry(request)
+        override fun endConversation(handle: String) {}
         override fun cancel() = session.cancel()
         override fun stopMicNow() = session.stopMicNow()
         override fun close() {
@@ -273,6 +276,9 @@ class DaidaiVoiceSessionTest {
                         session.start(reason, noticeId, autoStarted)
                     }
                     override fun retry() = session.retry()
+                    override fun start(request: TurnRequest) = session.start(request)
+                    override fun retry(request: TurnRequest) = session.retry(request)
+                    override fun endConversation(handle: String) {}
                     override fun cancel() = session.cancel()
                     override fun stopMicNow() = session.stopMicNow()
                     override fun close() {

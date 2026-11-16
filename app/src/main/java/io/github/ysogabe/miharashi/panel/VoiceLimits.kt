@@ -67,6 +67,9 @@ object VoiceLimits {
     // ---- ホスト値の既定と Panel の上限(秒)
     const val NO_SPEECH_DEFAULT_S = 10L
     const val NO_SPEECH_MAX_S = 10L
+
+    /** 続きの往復の作成の本文に入れる `limits.no_speech_s`(段階 2a-P。設計書(段階 2)§5.3)。ホストは `min` を取る */
+    const val FOLLOW_NO_SPEECH_S = 6L
     const val MAX_UTTERANCE_DEFAULT_S = 30L
     const val MAX_UTTERANCE_MAX_S = 30L
     const val REPLY_TIMEOUT_DEFAULT_S = 45L
@@ -85,6 +88,9 @@ object VoiceLimits {
     val SESSION_ID_REGEX = Regex("^[A-Za-z0-9_-]{1,64}$")
     val NOTICE_ID_REGEX = Regex("^[A-Za-z0-9_.:-]{1,64}$")
     val POSE_REGEX = Regex("^[A-Za-z0-9_-]{1,32}$")
+
+    /** 会話のハンドル(ホストが発行する 128 ビットの乱数の URL-safe base64、22 文字)。完全一致で照合する(`matches`。末尾の改行を許さない) */
+    val CONVERSATION_HANDLE_REGEX = Regex("^[A-Za-z0-9_-]{22}$")
 }
 
 /**

@@ -16,14 +16,24 @@ data class SessionRequest(
     val noSpeechS: Long = VoiceLimits.NO_SPEECH_DEFAULT_S,
     /** 同 `limits.max_utterance_s` */
     val maxUtteranceS: Long = VoiceLimits.MAX_UTTERANCE_DEFAULT_S,
+    /**
+     * 会話(段階 2a-P。設計書(段階 2)§6.1)。null なら本文に `conversation` を**書かない**(旧 Panel とバイト単位で同じ)。
+     * `toString` に含まれる [ConversationParam] はハンドルを出さない。
+     */
+    val conversation: ConversationParam? = null,
 )
 
 /**
  * 作成の応答(`201`)。`sessionId` はホストの文字列そのまま(形式の検証は [VoiceSession] が `^[A-Za-z0-9_-]{1,64}$` で行い、
- * 外れたら作成の失敗にする)。`toString` はセッション id を含めない。
+ * 外れたら作成の失敗にする)。`conversation` は応答に辞書の `conversation` があるときだけ(旧ホストは null)。
+ * `toString` はセッション id もハンドルも含めない。
  */
-data class SessionInfo(val sessionId: String, val limits: HostLimits = HostLimits()) {
-    override fun toString() = "SessionInfo(idLen=${sessionId.length}, limits=$limits)"
+data class SessionInfo(
+    val sessionId: String,
+    val limits: HostLimits = HostLimits(),
+    val conversation: ConversationInfo? = null,
+) {
+    override fun toString() = "SessionInfo(idLen=${sessionId.length}, limits=$limits, conversation=$conversation)"
 }
 
 /** チャンクの応答の `state`。 */
@@ -135,6 +145,7 @@ class BridgeException(
  * - `fetchReplyAudio`: `index` は整数。検証済みの WAV を返す。10 MB・120 秒を超えるものは読みながら打ち切って `MALFORMED`。
  * - `cancel`: `DELETE`。`204` / `404` を成功とする。**`abortInFlight` で中断してはいけない**(停止の順序は abort → cancel なので、
  *   `cancel` は abort の後に始まるが、次のセッションの abort で潰れないよう、cancel 専用の接続は abort の対象外にする)。
+ * - `endConversation`: `POST`。`cancel` と同じ流儀で、`abort` の対象外。ハンドルは URL にも例外のメッセージにも出さない。
  * - `abortInFlight`: 今通信中の接続を**すべて**(SSE を含む)切り、ブロック中の呼び出しを例外で戻らせる。ノンブロッキングで、どのスレッドからも呼べる。
  *   VoiceSession は 4 秒のチャンクのウォッチドッグでもこれを使うので、その副作用で SSE が切れる場合がある(VoiceSession は
  *   再接続の回数に数えずに張り直す)。
@@ -147,5 +158,14 @@ interface BridgeApi {
     fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit)
     fun fetchReplyAudio(id: String, index: Int): ByteArray
     fun cancel(id: String)
+
+    /**
+     * 会話の終わりを伝える(`POST /v1/voice/conversations/end`、本文 `{"handle":"…"}`。段階 2a-P)。**ハンドルを URL に入れない**。
+     * 送る前に [VoiceLimits.CONVERSATION_HANDLE_REGEX] で検証し、外れたら送らずに [IllegalArgumentException](メッセージにハンドルを入れない)。
+     * [cancel] と同じく中断([abortInFlight])の対象にしない接続で、短い期限で送る。`204`(と旧ホストの `404`)を成功とする。
+     * 呼ぶ側は結果を無視する(最良努力)。
+     */
+    fun endConversation(handle: String)
+
     fun abortInFlight()
 }

@@ -765,8 +765,8 @@ class VoiceBridgeScenarioTest {
             snaps += snapshot
             times += sim.nowMs()
         }
-        override fun onMicOpened(autoStarted: Boolean) { micOpenedAt += 0 }
-        override fun onEnded(autoStarted: Boolean, reason: String) { ended += autoStarted to reason }
+        override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag) { micOpenedAt += 0 }
+        override fun onEnded(autoStarted: Boolean, reason: String, outcome: TurnOutcome, tag: TurnTag) { ended += autoStarted to reason }
 
         /** 状態の遷移の並び(連続した同じ値は 1 つに) */
         fun states(): List<VoiceState> = snaps.map { it.state }.fold(mutableListOf()) { acc, s ->
@@ -824,6 +824,11 @@ class VoiceBridgeScenarioTest {
         override fun cancel(id: String) {
             enter("cancel")
             inner.cancel(id)
+        }
+
+        override fun endConversation(handle: String) {
+            enter("endConversation")
+            inner.endConversation(handle)
         }
 
         override fun abortInFlight() = inner.abortInFlight()

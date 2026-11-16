@@ -159,6 +159,7 @@ class VoiceSessionMicRaceTest {
             override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
             override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)
             override fun cancel(id: String) { deleted += id }
+            override fun endConversation(handle: String) {}
             override fun abortInFlight() {}
         }
         private val scheduler = object : SessionScheduler {

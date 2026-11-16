@@ -15,6 +15,21 @@ interface VoiceRuntime {
     /** セッションを取り消す(マイク停止・release、通信の中断、`DELETE`)。冪等 */
     fun cancel()
 
+    /**
+     * 往復の要求([TurnRequest])で新しいセッションを始める(段階 2a-P)。進行中なら無視される。呼び出したスレッドで開く許可を控えるので、
+     * これのあとに [cancel] が来ると作成の要求は出ない。
+     */
+    fun start(request: TurnRequest)
+
+    /** [retry] の [TurnRequest] 版。ERROR でなければ何もしない */
+    fun retry(request: TurnRequest)
+
+    /**
+     * 会話の終わりをホストへ伝える(`POST /v1/voice/conversations/end`)。**ノンブロッキング**で、どのスレッドから呼んでもよい(メインスレッドで通信しない)。
+     * 最良努力で、失敗は握りつぶす。[close] より前に呼んだものは、[close] のあとでも送られる。ハンドルは不正な形でも例外にしない。
+     */
+    fun endConversation(handle: String)
+
     /** セッションのスレッドを介さずにマイクを止める(最後の防衛線)。冪等 */
     fun stopMicNow()
 
@@ -224,7 +239,7 @@ class DaidaiVoice(
             main.post { if (id == runtimeId) onSnapshotOnMain(snapshot) }
         }
 
-        override fun onMicOpened(autoStarted: Boolean) {
+        override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag) {
             val openedAtMs = nowMs() // 開いた時刻。開始音(と main への配送)の遅れを含めない
             // 開始音: セッションのスレッドで鳴らす。例外は録音を止める理由にしない(ここで投げるとセッションが終わる)
             try {
@@ -239,7 +254,7 @@ class DaidaiVoice(
             }
         }
 
-        override fun onEnded(autoStarted: Boolean, reason: String) {
+        override fun onEnded(autoStarted: Boolean, reason: String, outcome: TurnOutcome, tag: TurnTag) {
             // 古い(作り直し前の)セッションの終了も、歯止めの記録としては数える
             main.post { policy.onSessionEnded(autoStarted, reason) }
         }

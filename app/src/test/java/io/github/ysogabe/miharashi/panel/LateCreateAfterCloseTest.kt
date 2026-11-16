@@ -73,6 +73,7 @@ class LateCreateAfterCloseTest {
         override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
         override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)
         override fun cancel(id: String) { cancels += id }
+        override fun endConversation(handle: String) {}
         override fun abortInFlight() {} // 中断が間に合わなかった(作成は成功して戻る)
     }
 
@@ -94,7 +95,7 @@ class LateCreateAfterCloseTest {
             if (!closed.compareAndSet(false, true)) return
             session.cancel()
             session.stopMicNow()
-            if (wrap) bridge.close().forEach { runCatching { bridge.cancel(it) } } // AndroidVoiceRuntime.close: 未取消の ID を回収して DELETE
+            if (wrap) bridge.close().sessionIds.forEach { runCatching { bridge.cancel(it) } } // AndroidVoiceRuntime.close: 未取消の ID を回収して DELETE
             gated.post { gated.terminated = true } // executor.shutdown(); thread.quitSafely()
         }
     }

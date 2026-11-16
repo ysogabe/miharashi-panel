@@ -108,6 +108,10 @@ class BridgeClient(
                     .put("channels", VoiceLimits.CHANNELS),
             )
             .put("limits", JSONObject().put("no_speech_s", req.noSpeechS).put("max_utterance_s", req.maxUtteranceS))
+            .also { o ->
+                // 省略できる。null なら書かない(旧 Panel とバイト単位で同じ)。JSON の null は送らない(新しいホストは 400 にする)
+                req.conversation?.let { c -> o.put("conversation", JSONObject().also { j -> c.handle?.let { h -> j.put("handle", h) } }) }
+            }
             .toString().toByteArray(Charsets.UTF_8)
         return exchange(
             "POST", "/v1/voice/sessions", ACCEPT_JSON, abortable = true, totalMs = createTimeoutMs, readTimeoutMs = readMs(createTimeoutMs),
@@ -119,8 +123,19 @@ class BridgeClient(
             // 応答のほかの項目(URL・パスのように見えるもの)は読まない。使うのは session_id と limits だけ
             val id = (o.opt("session_id") as? String)?.takeIf { VoiceLimits.SESSION_ID_REGEX.matches(it) }
                 ?: fail(BridgeFailure.MALFORMED, code)
-            SessionInfo(id, parseLimits(o.opt("limits")))
+            SessionInfo(id, parseLimits(o.opt("limits")), parseConversation(o.opt("conversation")))
         }
+    }
+
+    /**
+     * 応答の `conversation`(辞書のときだけ。それ以外は null = 旧ホストと同じ「会話なし」)。`handle` は正規表現に**完全一致**したものだけ
+     * (外れたら null。記号・長さ違い・末尾の改行・文字列でない型を採らない)。`continue` は boolean の false のときだけ false(省略・別の型は true)。
+     * `context` は boolean のときだけ値、それ以外は null。ほかの項目は読まない。
+     */
+    private fun parseConversation(v: Any?): ConversationInfo? {
+        val o = v as? JSONObject ?: return null
+        val handle = (o.opt("handle") as? String)?.takeIf { VoiceLimits.CONVERSATION_HANDLE_REGEX.matches(it) }
+        return ConversationInfo(handle, o.opt("context") as? Boolean, (o.opt("continue") as? Boolean) != false)
     }
 
     private fun parseLimits(v: Any?): HostLimits {
@@ -293,6 +308,26 @@ class BridgeClient(
         requireSessionId(id)
         exchange(
             "DELETE", "/v1/voice/sessions/$id", ACCEPT_JSON, abortable = false, totalMs = cancelTimeoutMs, readTimeoutMs = readMs(cancelTimeoutMs),
+        ) { c ->
+            val code = c.responseCode
+            if (code != 204 && code != 404) failStatus(c, code, forChunk = false)
+        }
+    }
+
+    // =========================================================================================
+    // 会話の終わり(段階 2a-P。設計書(段階 2)§6.1)
+
+    /**
+     * `POST /v1/voice/conversations/end`、本文 `{"handle":"…"}`。**ハンドルを URL に入れない**(アクセスログに残らないように)。
+     * 検証は通信の外(`exchange` は `RuntimeException` を通信失敗に畳むので、ここで先に投げる)。中断の対象にしない接続で、[cancel] と同じ期限。
+     * `204` と、旧ホストの `404` を成功とする。
+     */
+    override fun endConversation(handle: String) {
+        require(VoiceLimits.CONVERSATION_HANDLE_REGEX.matches(handle)) { "invalid conversation handle" } // メッセージにハンドルを入れない
+        val body = JSONObject().put("handle", handle).toString().toByteArray(Charsets.UTF_8)
+        exchange(
+            "POST", "/v1/voice/conversations/end", ACCEPT_JSON, abortable = false, totalMs = cancelTimeoutMs, readTimeoutMs = readMs(cancelTimeoutMs),
+            body = body, contentType = "application/json",
         ) { c ->
             val code = c.responseCode
             if (code != 204 && code != 404) failStatus(c, code, forChunk = false)
