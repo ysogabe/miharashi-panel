@@ -20,3 +20,16 @@
 本番アプリの入れ替えには別途ユーザーの承認が要るので、この作業では行わない。残件として PR に書く(続きの開始音が聞こえるか、続きの最初に自分の返答の残響を拾わないか、離脱でマイクが閉じるか)。
 
 ## 進行ログ
+
+## 全体レビューと最終確認
+
+- 最終確認(331bf8a、clean ビルド): `testDebugUnitTest` 1038 件のうち、既存の不安定な `BridgeClientTest.slowAudioDownloadIsCutByTheOverallDeadline` だけが 1 回落ちた(そのクラスを 3 回流して 3 回通過。変更前の main d206a3f でも単独で 6 回中 5 回落ちる)。ほかは失敗 0。`assembleDebug` 成功。`scripts/test-install.sh` 332 件成功(scripts は変更なし)。
+- PRD 突き合わせ(Sol): 必須なし。AC1〜AC6 は満たす(AC3 は Panel の範囲。新ホストの panelsim はホスト側)、AC14 は実機で未確認。推奨 2(USAGE の「必ず音が鳴る」と「会話が終わると捨てる」が実装より強い保証)→ 9740946 で文言を直した。T1 で見送った指摘を再掲する根拠は無いとの判断。
+- セキュリティ(Opus、`security-review`、331bf8a): `PREFLIGHT OK`、High/Medium とも指摘なし。
+
+## 残件(この PR の範囲外・未実施)
+
+1. 実機(AC14。本番アプリの入れ替えはユーザーの承認が要る): スワイプ → 3 往復 → 続きの無発話で ERROR なしに待機、通知の自動起動から 2 往復、続きの開始音(DTMF「1」100 ms)が聞こえて最初の音と聞き分けられる、開始音とその尾が 400 ms の破棄に収まり返答の残響を拾わない、離脱 5 経路でマイクが閉じる(端末の表示か `dumpsys`)。
+2. ホスト側(2a-H、local-model-lab #136): 作成の本文の `conversation` の検査とハンドルの発行、201 の `conversation`(`handle`・`context`・`continue`)、`POST /v1/voice/conversations/end`(知らないハンドルでも 204、形が違えば 400)、会話メモリ、AC7、AC3 のホスト側(新ホストの panelsim と S1〜S15)。Panel は今のホストでも文脈なしの複数往復として動く(未知の項目は無視され、終わりの通知は 404 を成功として扱う)。
+3. 既存の不安定な試験 `BridgeClientTest.slowAudioDownloadIsCutByTheOverallDeadline`(変更前から。別に直す)。
+4. タップでの割り込み(2a-T、miharashi-panel #22。`TurnOutcome.TAPPED` は値だけ)、直前の往復の表示(PRD R14、あると良い)、挨拶(段 G)。
