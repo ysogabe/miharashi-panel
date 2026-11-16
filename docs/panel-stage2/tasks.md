@@ -10,7 +10,7 @@
 
 | ID | 内容 | AC | 依存 | 種類 | 状態 | 開始 SHA | コミット | メモ |
 |---|---|---|---|---|---|---|---|---|
-| T1 | 契約と 1 往復の層: `SessionRequest`/`SessionInfo` の `conversation`、`BridgeApi.endConversation`(`POST /v1/voice/conversations/end`)、`DeleteOnCloseBridge` の後始末と重複の抑止、`VoiceSession` の往復の要求(`TurnRequest`)・往復の結果(8 種)・呼び出し側のスレッドでの開始の許可・続きの `no_speech` を静かに終える・古い 201 のハンドルの後始末、`VoiceRuntime.endConversation` | AC1, AC4, AC3(一部) | - | full | 実装中 | 64e6bc4 | | |
+| T1 | 契約と 1 往復の層: `SessionRequest`/`SessionInfo` の `conversation`、`BridgeApi.endConversation`(`POST /v1/voice/conversations/end`)、`DeleteOnCloseBridge` の後始末と重複の抑止、`VoiceSession` の往復の要求(`TurnRequest`)・往復の結果(8 種)・呼び出し側のスレッドでの開始の許可・続きの `no_speech` を静かに終える・古い 201 のハンドルの後始末、`VoiceRuntime.endConversation` | AC1, AC4, AC3(一部) | - | full | 完了 | 64e6bc4 | b8160b5, 220f9f8, 714b6f8, 43f0b77 | 実装 Sonnet、レビュー Sol 3 回(必須: r1 作成をワーカーに積んだあとの取消で作成が出る → 714b6f8、r2 通信層が世代を取り直す窓 → 43f0b77、推奨: 対照試験の空振り → 43f0b77)。**見送り 1 件**(r3 必須「最後の照合と送信を共通の同期で順序付けよ」): 本文の直前の照合(`AtomicInteger` の読み取り)が送信の確定点で、それより後の取消は「送ると決めたあとの取消」。取消側(メイン)が送信の完了を待つ形にしない限り窓は消えず、それは既存の設計(取消は通信を待たない)と ANR の恐れに反する。その窓は S7(遅れた 201 の DELETE と会話の終わり)で回収する。参考: `withDeadline` と競合すると取消の分類が `IOException` になりうる(世代が進んでいれば捨てられる)。テスト 959 件・失敗 0。既存の不安定な試験 `BridgeClientTest.slowAudioDownloadIsCutByTheOverallDeadline` は main(d206a3f)でも 6 回中 5 回落ちる(T1 の後退ではない) |
 | T2 | 会話の制御: `DaidaiVoice` の会話(世代・往復番号・上限・受付の期限・在席ゲート・残響の待ち・続けるかの判定・終わりの通知・再試行は新しい会話)、`AutoSwitchPolicy` との関係(最初の往復だけ・S2-U14)、無操作タイマー、続きの開始音、`PanelActivity` の結線、`MockWebServer` の複数往復のシナリオと §5.4 の競合の試験 | AC2, AC3, AC5, AC6 | T1 | full | 未着手 | | | |
 | T3 | 文書: Panel 設計の R19・O-3・§5.2.1・§5.5 と PRD の R19 の更新、USAGE の会話の説明 | (AC14 の記録) | T2 | quick | 未着手 | | | |
 
