@@ -129,6 +129,74 @@ class VoiceConversationScenarioTest {
 
     // ---- 競合(HTTP 越し。遅い 201 の後始末の細部は DaidaiVoiceFollowSessionTest)
 
+    // ---- 段階 2b-2: 断る用の往復(脳がクラウドで、ホストが送らずに daidai_unavailable にする)。201 は brain: cloud/daidai と continue: true のまま
+
+    private val cloudDaidai = JSONObject().put("name", "daidai").put("egress", "cloud")
+
+    @Test fun daidaiUnavailableOnTheFirstTurnShowsTheErrorStopsAndEndsTheConversationOnce() {
+        val e = env { brain = cloudDaidai }
+        e.enter()
+        e.awaitMic(1)
+        e.sim.advance(450)
+        // ホストは 201 で brain をクラウドのだいだいと返し、continue は true のまま、SSE の終端 error で断る
+        e.host.emit("s-1", "error" to { put("code", "daidai_unavailable").put("message", "daidai down") })
+        e.sim.await("ERROR を出す") { e.states.contains(VoiceState.ERROR) }
+        e.sim.await("会話の終わり") { e.host.conversationEnds.isNotEmpty() }
+        e.sim.pumpFor(300)
+        e.sim.advance(10_000) // 残響の待ち・受付の期限を過ぎても、続きは作られない
+        e.sim.pumpFor(300)
+
+        val err = e.uis.first { it.voice == VoiceState.ERROR }
+        assertEquals(VoiceErrorCode.DAIDAI_UNAVAILABLE, err.error)
+        assertEquals("だいだいに接続できません。しばらくしてからお試しください", DaidaiText.errorMessage(err.error))
+        assertNull("エラーの画面には送り先の表記を出さない(マイクは閉じている)", err.brainNotice)
+        assertEquals("続きの往復を作らない", 1, e.host.createBodies.size)
+        assertEquals("会話の終わりは 1 回(1 往復目のハンドル)", listOf(e.host.issuedHandle(1)), e.host.conversationEnds.toList())
+        assertEquals("マイクは 1 回だけ", 1, e.audio.startCount)
+        assertEquals(0, e.followTones)
+        e.assertMicSnapshotsCarryTheCloudNotice()
+    }
+
+    @Test fun daidaiUnavailableOnAFollowTurnWithContinueTrueShowsTheErrorInsteadOfGoingBackToIdleSilently() {
+        val e = env { brain = cloudDaidai }
+        e.enter()
+        e.awaitMic(1)
+        e.speakAndHostReplies(1)
+        e.playbackEnds(1)
+        e.advanceEchoWait()
+        e.awaitMic(2)
+        assertEquals("続きの開始音", 1, e.followTones)
+        assertTrue("2 往復目の 201 も continue: true", e.host.createBodies.size == 2)
+        e.sim.advance(450)
+        e.host.emit("s-2", "error" to { put("code", "daidai_unavailable").put("message", "daidai down") })
+        e.sim.await("ERROR を出す") { e.states.contains(VoiceState.ERROR) }
+        e.sim.await("会話の終わり") { e.host.conversationEnds.isNotEmpty() }
+        e.sim.pumpFor(300)
+        e.sim.advance(10_000)
+        e.sim.pumpFor(300)
+
+        val err = e.uis.first { it.voice == VoiceState.ERROR }
+        assertEquals("続きの往復でも、無発話のように黙って IDLE に戻さない", VoiceErrorCode.DAIDAI_UNAVAILABLE, err.error)
+        assertEquals("続きを作らない", 2, e.host.createBodies.size)
+        assertEquals("会話の終わりは 1 回", listOf(e.host.issuedHandle(1)), e.host.conversationEnds.toList())
+        assertEquals(2, e.audio.startCount)
+        e.assertMicSnapshotsCarryTheCloudNotice()
+    }
+
+    @Test fun theBrainOfTheHostShowsTheNoticeOfEachTurnWhileTheMicIsOpen() {
+        // 通知の会話はクラウド設定でもホストの脳が返る: 往復ごとに brain が決まり、表記が切り替わる
+        val e = env { brainOfTurn = { n -> if (n == 1) cloudDaidai else JSONObject().put("name", "llm-vl").put("egress", "host") } }
+        e.enter()
+        e.awaitMic(1)
+        assertEquals("だいだい(クラウド)に送ります", e.uis.last { it.micActive }.brainNotice)
+        e.speakAndHostReplies(1)
+        e.playbackEnds(1)
+        e.advanceEchoWait()
+        e.awaitMic(2)
+        assertEquals("このホストで答えます(外へは送りません)", e.uis.last { it.micActive }.brainNotice)
+        assertTrue(e.uis.none { it.micActive && it.brain == null })
+    }
+
     @Test fun leavingDuringTheEchoWaitSendsOneEndAndCreatesNothing() {
         val e = env()
         e.enter()
@@ -200,6 +268,10 @@ class VoiceConversationScenarioTest {
         val closed = CountDownLatch(1)
 
         @Volatile var omitConversation = false
+
+        /** 201 の `brain`(null なら書かない = 旧ホスト)。[brainOfTurn] があればそちらが優先(n は 1 から) */
+        @Volatile var brain: JSONObject? = null
+        @Volatile var brainOfTurn: ((Int) -> JSONObject?)? = null
         @Volatile var continueFlag = true
         @Volatile var createHandler: ((Int) -> MockResponse?)? = null
 
@@ -271,6 +343,7 @@ class VoiceConversationScenarioTest {
                 JSONObject().put("no_speech_s", minOf(10L, body.getJSONObject("limits").getLong("no_speech_s"))).put("max_utterance_s", 30)
                     .put("reply_timeout_s", 45).put("idle_expire_s", 15).put("retain_s", 60),
             )
+            (brainOfTurn?.invoke(n) ?: brain)?.let { json.put("brain", JSONObject(it.toString())) }
             if (!omitConversation && conv != null) {
                 val handle = if (conv.has("handle")) conv.getString("handle") else "Conv${n}".padEnd(22, 'x').also { handles[n] = it }
                 json.put("conversation", JSONObject().put("handle", handle).put("context", true).put("continue", continueFlag))
@@ -305,6 +378,7 @@ class VoiceConversationScenarioTest {
         override fun start(request: TurnRequest) = session.start(request)
         override fun retry(request: TurnRequest) = session.retry(request)
         override fun endConversation(handle: String) = quietly { dob.endConversation(handle) }
+        override fun brainNoticeDrawn(token: Int) = session.brainNoticeDrawn(token)
         override fun cancel() = session.cancel()
         override fun stopMicNow() = session.stopMicNow()
         override fun close() {
@@ -336,6 +410,9 @@ class VoiceConversationScenarioTest {
         val settings = DaidaiSettings(url = server.url("/").toString().trimEnd('/'), token = TOKEN)
         val pages = PageController()
         val states = CopyOnWriteArrayList<VoiceState>()
+
+        /** 画面へ渡した [DaidaiUiState] の列(2b-2: マイクが開いている間の表記を見る) */
+        val uis = CopyOnWriteArrayList<DaidaiUiState>()
         var tones = 0
         var followTones = 0
         private var plays = 0
@@ -346,7 +423,8 @@ class VoiceConversationScenarioTest {
             voice = DaidaiVoice(
                 pages, controller.policy, { settings },
                 VoiceRuntimeFactory { s, l -> ScenarioRuntime(s, l, this) },
-                sim, { states += it.voice },
+                // 画面の偽: Robolectric は onDraw を回さないので、表記を描くはずの状態を受けたら、描き終えた確認を返す(DaidaiView と同じ条件)
+                sim, { states += it.voice; uis += it; it.drawnBrainAck().let { ack -> if (ack != 0) voice.onBrainNoticeDrawn(ack) } },
                 object : StartSound {
                     override fun play() { tones++ }
                     override fun playFollow() { followTones++ }
@@ -420,6 +498,13 @@ class VoiceConversationScenarioTest {
                 if (r != 0) assertTrue("状態の後退: $s(直前の順位 $prev)", r >= prev)
                 prev = if (r == 0) 0 else r
             }
+        }
+
+        /** マイクが開いている(または合図の再生中の)画面には、必ず「だいだい(クラウド)に送ります」が付く */
+        fun assertMicSnapshotsCarryTheCloudNotice() {
+            val open = uis.filter { it.micActive || it.cuePlaying || it.voice == VoiceState.LISTENING || it.voice == VoiceState.HEARING }
+            assertTrue(open.isNotEmpty())
+            for (u in open) assertEquals("$u", "だいだい(クラウド)に送ります", u.brainNotice)
         }
 
         fun assertOnlyBridgeBearer() {

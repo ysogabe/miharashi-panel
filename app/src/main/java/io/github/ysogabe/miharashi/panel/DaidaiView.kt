@@ -215,7 +215,17 @@ class DaidaiView(
         lay.card?.let { drawCard(c, lay, it, s, p) }
         drawStatus(c, lay, s, p)
         drawReply(c, lay, s, p)
+        drawBrainNotice(c, lay, s)
+        // 表記を描き終えた。ここで確認を返す(render / invalidate の時点ではない)。描いたのと同じ状態 [s] の印を返す。案内の表示(上の early return)や表記なしの描画では返さない
+        if (s.brainNotice != null && s.brainAck != 0) onBrainNoticeDrawn?.invoke(s.brainAck)
     }
+
+    /**
+     * 「外へ出る」表記([DaidaiUiState.brainNotice])を、`onDraw` で描き終えた(段階 2b-2。R15)。引数は描いた状態の [DaidaiUiState.brainAck]。
+     * 描くたびに呼ぶ(重複はセッションが捨てる)。呼び出しは UI スレッドで、受け取り側は post するだけにする。保証の境目は `onDraw` の完了までで、
+     * 画面の合成・表示(パネルへの出力)の遅れは含まない。
+     */
+    var onBrainNoticeDrawn: ((Int) -> Unit)? = null
 
     private fun avatarColors() = AvatarColors(
         face = PanelView.ACCENT, feature = contrastColor(PanelView.BASE_BG, Color.BLACK), mark = WARN, contrast = contrastStrength)
@@ -326,6 +336,19 @@ class DaidaiView(
             val size = lay.px(32f)
             text(c, DaidaiText.HINT, box.left, box.top + lay.px(8f) + size, size, MUTED, bold)
         }
+    }
+
+    /**
+     * マイクが開いている間と合図の再生中の、どこへ送るかの表記(R15)。1 行で、収まらなければ省略。外へ出る(出るかもしれない)ときは警告色、
+     * ホストの中だけのときは控えめな色。文言は固定で、ホストの文字列は使わない。
+     */
+    private fun drawBrainNotice(c: Canvas, lay: DaidaiLayout, s: DaidaiUiState) {
+        val notice = s.brainNotice ?: return
+        val box = lay.brainNotice
+        val size = lay.px(DaidaiLayout.BRAIN_NOTICE_SIZE)
+        regular.textSize = size
+        val line = TextFitter.ellipsize(notice, box.width) { regular.measureText(it) }
+        text(c, line, box.left, box.centerY + size * 0.35f, size, if (s.brain?.staysOnHost == true) MUTED else WARN, regular)
     }
 
     /** 返答の下に出す小さな失敗理由(1 行。収まらなければ省略)。吹き出しではなく、状態の色(警告色)の文字 */

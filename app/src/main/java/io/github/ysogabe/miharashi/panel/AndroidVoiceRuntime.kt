@@ -91,6 +91,11 @@ class AndroidVoiceRuntime(
         session.cancel()
     }
 
+    override fun brainNoticeDrawn(token: Int) {
+        if (closed.get()) return
+        session.brainNoticeDrawn(token)
+    }
+
     override fun stopMicNow() = session.stopMicNow()
 
     override fun close() {

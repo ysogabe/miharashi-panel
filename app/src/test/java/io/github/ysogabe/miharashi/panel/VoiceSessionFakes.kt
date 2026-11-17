@@ -364,8 +364,21 @@ class FakePlayer(private val log: MutableList<String>) : ReplyPlayer {
     }
 }
 
+/**
+ * [DaidaiView.onDraw] が返す確認と同じ条件(段階 2b-2。R15): 「外へ出る」表記を描くときだけ、その状態の印を返す。0 は返さない。
+ * Robolectric は `onDraw` を自動では回さない(`view.draw(Canvas)` を明示したときだけ)ので、画面の偽は描いたつもりでこれを使う。
+ */
+fun DaidaiUiState.drawnBrainAck(): Int = if (brainNotice != null && brainAck != 0) brainAck else 0
+
+/** スナップショットを [DaidaiVoice] と同じ写しで画面の状態にしたときの確認の印([drawnBrainAck]) */
+fun VoiceSnapshot.drawnBrainAck(): Int =
+    DaidaiUiState(voice = state, micActive = micActive, cuePlaying = cuePlaying, brain = brain, preparing = preparing, brainAck = brainAck).drawnBrainAck()
+
 class RecordingListener(private val sim: Sim, private val log: MutableList<String>) : VoiceSessionListener {
     val snaps = mutableListOf<VoiceSnapshot>()
+
+    /** スナップショットを記録したあとに呼ぶ(例外を投げる設定の前)。[Rig] は、画面が描き終えたつもりの確認を返すのに使う */
+    var onSnapshotHook: ((VoiceSnapshot) -> Unit)? = null
     val micOpenedAt = mutableListOf<Long>()
     val micOpenedAuto = mutableListOf<Boolean>()
     val micOpenedFollow = mutableListOf<Boolean>()
@@ -386,6 +399,7 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
     override fun onSnapshot(snapshot: VoiceSnapshot) {
         log += "snapshot:${snapshot.state}"
         snaps += snapshot
+        onSnapshotHook?.invoke(snapshot)
         if (throwOnSnapshot?.invoke(snapshot) == true) throw IllegalStateException("snapshot failed: ${snapshot.state}")
     }
 
@@ -453,8 +467,24 @@ class Rig(
     /** チャンクの応答の `state`(既定の [FakeBridge.chunkReply] が使う) */
     var ackState = AckState.LISTENING
 
+    /**
+     * true の間、画面は「外へ出る」表記を描き終えて、すぐ確認([VoiceSession.brainNoticeDrawn])を返す(本番の [DaidaiView] と同じ条件。[drawnBrainAck])。
+     * false にすると確認が来ない画面(描き終わらない・main の遅れ)を再現する。確認は [drawNotice] で明示して流す。
+     */
+    var screenDraws = true
+
+    /** 画面が描き終えたつもりで確認を返す。既定は、今までに載った一番新しい印 */
+    fun drawNotice(token: Int = listener.snaps.last { it.brainAck != 0 }.brainAck) {
+        session.brainNoticeDrawn(token)
+        sim.settle()
+    }
+
     init {
         bridge.chunkReply = { ok(ChunkAck(ackState, it.seq)) }
+        listener.onSnapshotHook = { s ->
+            val ack = s.drawnBrainAck()
+            if (screenDraws && ack != 0) session.brainNoticeDrawn(ack)
+        }
     }
 
     val phase: VoicePhase get() = session.phase

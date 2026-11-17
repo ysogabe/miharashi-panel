@@ -1,5 +1,6 @@
 package io.github.ysogabe.miharashi.panel
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.IOException
@@ -108,7 +109,12 @@ class BridgeClient(
 
     override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
         val body = JSONObject()
-            .put("client", JSONObject().put("id", req.clientId).put("app_version", req.appVersion))
+            .put(
+                "client",
+                // capabilities: 表示に対応していることの申告(段階 2b-2)。旧ホストは client の id 以外を読まないので、足しても害はない
+                JSONObject().put("id", req.clientId).put("app_version", req.appVersion)
+                    .put("capabilities", JSONArray().also { a -> CLIENT_CAPABILITIES.forEach { a.put(it) } }),
+            )
             .put("reason", req.reason.wire)
             .put("notice_id", req.noticeId ?: JSONObject.NULL)
             .put(
@@ -129,10 +135,10 @@ class BridgeClient(
             val code = c.responseCode
             if (code != 201) failStatus(c, code, forChunk = false)
             val o = readJson(c, code)
-            // 応答のほかの項目(URL・パスのように見えるもの)は読まない。使うのは session_id と limits だけ
+            // 応答のほかの項目(URL・パスのように見えるもの)は読まない。使うのは session_id・limits・conversation・brain だけ
             val id = (o.opt("session_id") as? String)?.takeIf { VoiceLimits.SESSION_ID_REGEX.matches(it) }
                 ?: fail(BridgeFailure.MALFORMED, code)
-            SessionInfo(id, parseLimits(o.opt("limits")), parseConversation(o.opt("conversation")))
+            SessionInfo(id, parseLimits(o.opt("limits")), parseConversation(o.opt("conversation")), BrainInfo.parse(o.opt("brain")))
         }
     }
 
@@ -564,6 +570,12 @@ class BridgeClient(
     }
 
     companion object {
+        /**
+         * 作成の本文の `client.capabilities`(段階 2b-2)。`brain_notice`: 脳の区分(201 の `brain.egress`)を、マイクが開いている間に画面へ出せる。
+         * ホストはこれが無い Panel のスワイプの会話を、脳がクラウドのとき送らずに `daidai_unavailable` にする。
+         */
+        val CLIENT_CAPABILITIES: List<String> = listOf("brain_notice")
+
         /** 自分の期限は、呼び出し側のウォッチドッグ(作成 5 秒・チャンク 4 秒・返答音声 20 秒)よりこれだけ長い(呼び出し側が先に効く) */
         const val DEADLINE_MARGIN_MS = 1_000L
 

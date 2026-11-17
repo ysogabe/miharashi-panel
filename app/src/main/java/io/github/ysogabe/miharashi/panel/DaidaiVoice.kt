@@ -32,6 +32,13 @@ interface VoiceRuntime {
      */
     fun endConversation(handle: String)
 
+    /**
+     * 画面が「外へ出る」表記を描き終えた確認(段階 2b-2。R15)。`token` は [DaidaiUiState.brainAck](= [VoiceSnapshot.brainAck])の印。
+     * ノンブロッキングで、どのスレッドから呼んでもよい(セッションのスレッドへ post するだけ)。印が今の往復のものでなければ、セッションが捨てる。
+     * 既定は何もしない(確認を要さない実装・試験のフェイク)。
+     */
+    fun brainNoticeDrawn(token: Int) {}
+
     /** セッションのスレッドを介さずにマイクを止める(最後の防衛線)。冪等 */
     fun stopMicNow()
 
@@ -208,8 +215,19 @@ class DaidaiVoice(
             else baseUi.copy(
                 voice = s.state, transcript = s.transcript, reply = s.reply, error = s.error, diagnostics = s.diagnostics,
                 micActive = s.micActive, noticePose = s.noticePose ?: baseUi.noticePose, cuePlaying = s.cuePlaying,
+                brain = s.brain, preparing = s.preparing, brainAck = s.brainAck,
             ),
         )
+    }
+
+    /**
+     * 画面([DaidaiView])が、「外へ出る」表記を描き終えた(`onDraw` の完了)。メインスレッド。今の runtime の今のスナップショットが載せた印と一致するときだけ、
+     * セッションへ渡す(破棄済みの runtime・古い往復の印は、ここで捨てる。セッション側も印を照合する)。マイクの許可を出すのは、このあとのセッションのスレッドの処理だけ。
+     */
+    fun onBrainNoticeDrawn(token: Int) {
+        val rt = runtime ?: return
+        if (token == 0 || snapshot?.brainAck != token) return
+        rt.brainNoticeDrawn(token)
     }
 
     // ---- 入場・退場

@@ -39,7 +39,7 @@ class DaidaiVoiceGreetingSessionTest {
         val rendered = mutableListOf<DaidaiUiState>()
         var tones = 0
         val policy = AutoSwitchPolicy(AmbientLightGate(sample = { LuxSample(100f) }, config = { GateConfig.from(configured) }))
-        val voice = DaidaiVoice(
+        val voice: DaidaiVoice = DaidaiVoice(
             pages, policy, { configured },
             VoiceRuntimeFactory { _, listener ->
                 val session = VoiceSession(audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0")
@@ -49,12 +49,14 @@ class DaidaiVoiceGreetingSessionTest {
                     override fun start(request: TurnRequest) = session.start(request)
                     override fun retry(request: TurnRequest) = session.retry(request)
                     override fun endConversation(handle: String) = Unit
+                    override fun brainNoticeDrawn(token: Int) = session.brainNoticeDrawn(token)
                     override fun cancel() = session.cancel()
                     override fun stopMicNow() = session.stopMicNow()
                     override fun close() { session.cancel(); session.stopMicNow() }
                 }
             },
-            sim, { rendered += it }, StartSound { tones++ }, { sim.now }, { GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT) },
+            // 画面の偽: Robolectric は onDraw を回さないので、表記を描くはずの状態を受けたら、描き終えた確認を返す(DaidaiView と同じ条件)
+            sim, { rendered += it; it.drawnBrainAck().let { ack -> if (ack != 0) voice.onBrainNoticeDrawn(ack) } }, StartSound { tones++ }, { sim.now }, { GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT) },
             cueFactory = CueSourceFactory { Store(cues) }, wallClockMs = { evening }, tzOffsetMs = { jst },
         )
         val ui get() = rendered.last()
@@ -109,6 +111,23 @@ class DaidaiVoiceGreetingSessionTest {
 
         r.enter()
         assertArrayEquals("同じ夜の 2 回目は「何かご用ですか?」", plain, r.player.lastWav)
+    }
+
+    @Test fun theNoticeOfAnExternalBrainIsOnScreenFromTheGreetingThroughTheOpenMic() {
+        // 段階 2b-2(R15): 挨拶の再生中からマイクが開いている間じゅう、画面に「どこへ送るか」が出る。表記の無いまま音を拾う画面は 1 つも出ない
+        val r = Rigged(mapOf("g_evening_swipe" to wav(2_120), "g_plain_swipe" to wav(1_480)))
+        r.bridge.createReply = { n -> ok(SessionInfo("s-$n", r.bridge.hostLimits, brain = BrainInfo(BrainName.DAIDAI, BrainEgress.CLOUD))) }
+        r.enter()
+        assertTrue(r.ui.cuePlaying)
+        assertEquals("挨拶の再生中", "だいだい(クラウド)に送ります", r.ui.brainNotice)
+        r.player.finish(true)
+        r.sim.settle()
+        r.sim.advance(VoiceLimits.CUE_ECHO_WAIT_MS)
+        assertTrue(r.ui.micActive)
+        assertEquals("マイクが開いたあと", "だいだい(クラウド)に送ります", r.ui.brainNotice)
+        for (u in r.rendered.filter { it.micActive || it.cuePlaying }) assertEquals("$u", "だいだい(クラウド)に送ります", u.brainNotice)
+        r.leave()
+        assertEquals("離れたあとは、前の脳の表記を残さない", null, r.ui.brain)
     }
 
     @Test fun withoutAGreetingTheChimePlaysInTheSameOrder() {

@@ -35,6 +35,9 @@ private class ActivityRuntime(val settings: DaidaiSettings, val listener: VoiceS
     override fun endConversation(handle: String) { calls += "endConversation"; conversationEnds += handle }
     override fun cancel() { calls += "cancel" }
     override fun stopMicNow() { calls += "stopMic" }
+    /** 画面が「外へ出る」表記を描き終えて返した確認(段階 2b-2) */
+    val brainNoticeAcks = mutableListOf<Int>()
+    override fun brainNoticeDrawn(token: Int) { brainNoticeAcks += token }
     override fun close() { closed = true; calls += "close" }
 }
 
@@ -109,6 +112,27 @@ class PanelActivityVoiceTest {
         val f = Fixture(Robolectric.buildActivity(PanelActivity::class.java).setup())
         check(f.pager.width > 0) { "layout を持たない" }
         return f
+    }
+
+    @Test fun theDrawnNoticeOfTheRealViewReachesTheRuntimeAsTheAckOfTheOpenMicGate() {
+        // 本番の配線(PanelActivity: daidaiView.onBrainNoticeDrawn → DaidaiVoice → runtime)。Robolectric は onDraw を自動で回さないので、描画は明示する
+        val f = start(configured = true)
+        try {
+            f.toB()
+            idle(600)
+            val rt = runtimes.single()
+            val cloud = BrainInfo(BrainName.DAIDAI, BrainEgress.CLOUD)
+            rt.listener.onSnapshot(VoiceSnapshot(state = VoiceState.IDLE, active = true, preparing = true, brain = cloud, brainAck = 77))
+            idle(50)
+            assertEquals("render だけでは確認は返らない", emptyList<Int>(), rt.brainNoticeAcks)
+            f.daidai.draw(android.graphics.Canvas(android.graphics.Bitmap.createBitmap(f.daidai.width, f.daidai.height, android.graphics.Bitmap.Config.ARGB_8888)))
+            assertEquals("onDraw で表記を描き終えると、その印が runtime へ渡る", listOf(77), rt.brainNoticeAcks.toList())
+            // 印のない(host)往復を描いても、何も返さない
+            rt.listener.onSnapshot(VoiceSnapshot(state = VoiceState.LISTENING, active = true, micActive = true, brain = BrainInfo(BrainName.OTHER, BrainEgress.HOST)))
+            idle(50)
+            f.daidai.draw(android.graphics.Canvas(android.graphics.Bitmap.createBitmap(f.daidai.width, f.daidai.height, android.graphics.Bitmap.Config.ARGB_8888)))
+            assertEquals(listOf(77), rt.brainNoticeAcks.toList())
+        } finally { f.finish() }
     }
 
     @Test fun unconfiguredBridgeNeverCreatesASessionOrOpensTheMic() {
