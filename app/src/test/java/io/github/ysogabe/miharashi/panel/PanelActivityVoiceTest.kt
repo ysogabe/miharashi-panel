@@ -47,11 +47,14 @@ class PanelActivityVoiceTest {
     private var tones = 0
 
     @Before fun install() {
+        // 挨拶の取得で本物のホストへ通信しない(段 G)
+        PanelActivity.testCueFactory = CueSourceFactory { null }
         PanelActivity.testVoiceRuntimeFactory = VoiceRuntimeFactory { s, l -> ActivityRuntime(s, l).also { runtimes += it } }
         PanelActivity.testStartSound = StartSound { tones++ }
     }
 
     @After fun uninstall() {
+        PanelActivity.testCueFactory = null
         PanelActivity.testVoiceRuntimeFactory = null
         PanelActivity.testStartSound = null
     }
