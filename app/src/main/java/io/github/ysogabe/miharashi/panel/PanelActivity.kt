@@ -264,7 +264,7 @@ class PanelActivity : Activity() {
     }
 
     override fun onDestroy() {
-        voice.stop()
+        voice.destroy()
         super.onDestroy()
     }
 

@@ -71,7 +71,7 @@ enum class VoicePhase {
  * ## 開始の合図(段 G。設計書(段階 2)§5.8.4)
  * [TurnRequest.cue] があれば(会話の最初の往復だけ。続きの往復では無視する)、作成が成功して `startSse` したあと、**マイクを閉じたまま**
  * 挨拶を [player] で鳴らす(状態は PREPARING のまま。スナップショットの `cuePlaying` を立てる)。鳴り終えたら [cueEchoWaitMs] 待ってマイクを開き、
- * 開いた直後の [cueGuardMs] の録音を捨てる(開始音は鳴らさない)。挨拶が無い・検査に落ちた・`onDone(false)`・期限(実データの長さ + 1.5 秒)切れなら、
+ * 開いた直後の [cueGuardMs] の録音を捨てる(開始音は鳴らさない)。挨拶が無い・検査に落ちた・`onDone(false)`・期限(実データの長さ + [VoiceLimits.CUE_PLAYBACK_MARGIN_MS])切れなら、
  * 同じ順序でチャイムを鳴らす。チャイムも鳴らせなければ、今までどおりマイクを開いた直後に開始音を鳴らし [startToneGuardMs] を捨てる
  * (自動起動で合図が 0 回になる経路を作らない)。合図の段の結果は [VoiceSessionListener.onMicOpened] の `cue` で渡す。
  * 再生の完了は世代と再生ごとの番号で照合する(期限で止めた挨拶の遅れた `onDone(false)` を、チャイムの結果と取り違えない)。

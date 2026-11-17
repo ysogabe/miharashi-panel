@@ -63,9 +63,17 @@ data class TurnRequest(
 /**
  * 開始の合図の段の中身(段 G)。[greeting] は検証済みの挨拶の WAV(取得できていなければ null)、[chime] は戻りのチャイム([StartChime])。
  * [choice] は選んだ挨拶([greeting] が null でも、何を選んだかを持つ)。WAV を持つので `data class` にしない(`toString` に中身を出さない)。
+ *
+ * 挨拶の WAV は**読むときに引く**([lookup]。挨拶の置き場はどのスレッドから読んでもよい)。[VoiceSession] は作成が返ってから 1 回だけ読むので、
+ * 入場の直前に頼んだ取り直しが作成の往復のあいだに終われば、その入場で使える。
  */
-class StartCuePlan(val greeting: ByteArray?, val chime: ByteArray, val choice: CueChoice?) {
-    override fun toString() = "StartCuePlan(greeting=${if (greeting == null) "none" else "set"}, choice=${choice?.name})"
+class StartCuePlan(private val lookup: () -> ByteArray?, val chime: ByteArray, val choice: CueChoice?) {
+    constructor(greeting: ByteArray?, chime: ByteArray, choice: CueChoice?) : this({ greeting }, chime, choice)
+
+    /** 今の挨拶の WAV(無い・引けなければ null) */
+    val greeting: ByteArray? get() = try { lookup() } catch (_: Exception) { null }
+
+    override fun toString() = "StartCuePlan(choice=${choice?.name})"
 }
 
 /** マイクを開いたときの、合図の段の結果([VoiceSessionListener.onMicOpened] に渡す) */

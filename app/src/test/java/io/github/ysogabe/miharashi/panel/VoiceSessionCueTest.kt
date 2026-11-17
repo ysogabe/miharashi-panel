@@ -198,6 +198,41 @@ class VoiceSessionCueTest {
         assertEquals(VoicePhase.IDLE, r.phase)
     }
 
+    @Test fun aCancelWhileTheCreateResultIsInFlightNeverGreets() {
+        val r = Rig()
+        r.bridge.createReply = { n -> ok(SessionInfo("s-$n", r.bridge.hostLimits), latencyMs = 100) }
+        r.startTurn(turn(plan()))
+        assertEquals(1, r.bridge.created.size)
+        r.session.stopMicNow() // 許可だけを同期に取り消す(作成の応答はまだ届いていない)
+        r.advance(100)
+        assertTrue("挨拶を始めない", r.listener.cueStarts.isEmpty())
+        assertEquals(0, r.player.plays)
+        assertEquals(0, r.audio.startCount)
+        assertEquals(listOf("s-1"), r.bridge.cancels)
+        assertEquals(VoicePhase.IDLE, r.phase)
+    }
+
+    @Test fun aChimeThatOverrunsFallsThroughToTheBeep() {
+        val r = Rig()
+        r.startTurn(turn(plan(g = null)))
+        r.advance(StartChime.DURATION_MS + VoiceLimits.CUE_PLAYBACK_MARGIN_MS - 1)
+        assertEquals(0, r.audio.startCount)
+        r.advance(1)
+        assertEquals(VoicePhase.LISTENING, r.phase)
+        assertEquals(listOf(MicCue.FAILED), r.listener.micCues)
+    }
+
+    @Test fun theGreetingIsLookedUpAfterTheCreateReturns() {
+        val r = Rig()
+        var available: ByteArray? = null
+        r.bridge.createReply = { n -> ok(SessionInfo("s-$n", r.bridge.hostLimits), latencyMs = 100) }
+        r.startTurn(turn(StartCuePlan({ available }, chime, choice)))
+        available = greeting // 入場の直前に頼んだ取り直しが、作成の往復のあいだに終わった
+        r.advance(100)
+        assertSame(greeting, r.player.lastWav)
+        assertEquals(listOf<CueChoice?>(choice), r.listener.cueStarts)
+    }
+
     @Test fun aFailedCreateNeverGreets() {
         val r = Rig()
         r.bridge.createReply = { failWith(bridgeError(BridgeFailure.SERVER_ERROR, 503)) }

@@ -260,6 +260,40 @@ class DaidaiVoiceCueTest {
         assertFalse("7 回目は 1 時間の上限で止まる", h.entries.last().openMic)
     }
 
+    @Test fun theBeepPathAfterAFailedCueDoesNotCountTheAutoStartAgain() {
+        val h = Harness()
+        h.ready()
+        for (i in 1..6) {
+            h.autoSwitch(1L + i, "n$i")
+            assertTrue("$i 回目は開く", h.entries.last().openMic)
+            h.cueStarted()
+            h.micOpened(MicCue.FAILED) // 挨拶もチャイムも鳴らせず、ビープで開いた
+            h.endTurn(TurnOutcome.ERROR, "done")
+            h.swipeOut()
+            h.sim.advance(AutoSwitchPolicy.AUTO_MIC_COOLDOWN_MS + 1_000)
+        }
+        assertEquals(6, h.tones)
+        h.autoSwitch(10, "n7")
+        assertFalse(h.entries.last().openMic)
+    }
+
+    @Test fun theGreetingIsResolvedWhenTheSessionReadsItNotWhenTheTurnIsBuilt() {
+        val h = Harness()
+        h.voice.onResume()
+        h.cues.wavs.clear() // 前面になったときの取得は失敗していた
+        h.swipeIn()
+        val plan = h.rt.turns.last().cue!!
+        h.cues.wavs["g_morning_swipe"] = "late".toByteArray() // 入場の直前の取り直しが、作成のあいだに終わった
+        assertArrayEquals("late".toByteArray(), plan.greeting)
+    }
+
+    @Test fun destroyClosesTheCueStore() {
+        val h = Harness()
+        h.voice.onResume()
+        h.voice.destroy()
+        assertTrue(h.cues.closed)
+    }
+
     @Test fun aSwipeCueStartIsNotAnAutoStart() {
         val h = Harness()
         h.swipeIn()

@@ -266,7 +266,7 @@ class DaidaiVoice(
             else -> return
         }
         val rt = ensureRuntime(s) ?: return
-        ensureCues(s)?.refreshIfDue() // 失敗のあとなら取り直す(待たない。間に合わなければ今回はチャイム)
+        ensureCues(s)?.refreshIfDue() // 失敗のあとなら取り直す(待たない。挨拶はセッションが作成のあとに引くので、作成の往復のあいだに終われば今回から使える)
         endConversation() // 前の会話が残っていれば先に終える(世代を進め、ハンドルがあれば終わりの通知)
         rt.cancel() // 念のため(進行中のものは start が無視するので、必ず空にしてから)
         val origin = if (entry.reason == PageReason.AUTO_NOTICE) Origin.AUTO_NOTICE else Origin.SWIPE
@@ -302,8 +302,9 @@ class DaidaiVoice(
         val now = wallClockMs()
         val offset = try { tzOffsetMs(now) } catch (_: Exception) { 0L }
         val choice = StartCue.choose(scene, now, offset, greetedDaypart)
-        val wav = try { cues?.get(choice.name) } catch (_: Exception) { null }
-        return StartCuePlan(wav, StartChime.wav(), choice)
+        val source = cues
+        // 挨拶の WAV はセッションが作成のあとに引く(入場の直前に頼んだ取り直しが、作成の往復のあいだに終われば使える)
+        return StartCuePlan({ source?.get(choice.name) }, StartChime.wav(), choice)
     }
 
     /** 接続先の挨拶の置き場(作り直しは接続先が変わったときだけ。未設定なら捨てる) */
@@ -374,6 +375,12 @@ class DaidaiVoice(
     fun stop() {
         cancel()
         disposeRuntime()
+    }
+
+    /** `onDestroy`: [stop] に加えて、挨拶の置き場も閉じる(取得の途中でも、以後は取りに行かない) */
+    fun destroy() {
+        stop()
+        disposeCues()
     }
 
     private fun cancelPendingStart() {
