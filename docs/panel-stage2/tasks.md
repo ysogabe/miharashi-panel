@@ -37,3 +37,17 @@
 3. 既存の不安定な試験 `BridgeClientTest.slowAudioDownloadIsCutByTheOverallDeadline`(変更前から。別に直す)。
 4. 本物の `AndroidVoiceRuntime` を通す試験が無い: `endConversation`(スレッドプールで送る)と、close での回収(閉じる前に成功した作成のハンドルの終わりの通知)。背面の経路は偽の runtime と `DeleteOnCloseBridge` の単体試験でだけ確かめている。実機の確認(1)で、背面に回したあとホストに終わりの通知が届くことも見る。
 5. タップでの割り込み(2a-T、miharashi-panel #22。`TurnOutcome.TAPPED` は値だけ)、直前の往復の表示(PRD R14、あると良い)、挨拶(段 G)。
+
+---
+
+# 段階 2b-2(脳の区分の表示と `brain_notice` の申告) タスク
+
+- Issue: ysogabe/local-model-lab の Issue #139(段階 2b)の Panel 側。ホスト側は local-model-lab の PR #149(実装済み・未配備)
+- 設計: 同じ設計書の §6.1(201 の `brain`)・§6.6(`brain_notice`)・§8(送る前の案内)、Panel 設計 §5.2.1「脳の区分の表示」・§5.5.1・§5.6、USAGE「外へ出る表示」
+- ブランチ: `feat/panel-stage2b2-brain-notice`
+- マージ: **しない**(push まで。PR は作らない)
+- 目的: 作成の本文の `client.capabilities` に `"brain_notice"` を入れる(入れないと、2b-3 で脳をだいだいに替えたとき、スワイプの会話がすべて `daidai_unavailable` になる)。同時に、マイクが開いている間に「いまの脳がどれで、外へ出るか」を画面 B に出す(要求 R15)
+
+| ID | 内容 | 状態 | メモ |
+|---|---|---|---|
+| 2b-2 | 申告(`BridgeClient.CLIENT_CAPABILITIES`)、201 の `brain` の読み取り(`BrainInfo`。無い・辞書でない = 旧ホストは null、`egress` が不明なら UNKNOWN、`name` は `daidai` だけ既知)、`VoiceSession` が 201 の時点で往復ごとに脳を持ち `VoiceSnapshot.brain` → `DaidaiUiState.brain` へ、表記(`DaidaiText.brainNotice`、返答の領域の最下段に `DaidaiView` が描く)、`daidai_unavailable` の通しの試験、文書 | 完了(push 済み) | `daidai_unavailable` は既存の ERROR の経路のままで足りた(コードの変更なし。試験で固定)。残件: 実機での見え方と、ホストの実物との結合(2b-3 の配備のあと) |
