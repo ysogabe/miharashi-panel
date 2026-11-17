@@ -68,6 +68,89 @@ class VoiceSessionBrainTest {
         r.assertNoMicOrCueSnapshotWithoutTheBrain(cloudDaidai)
     }
 
+    /** 画面側の条件([DaidaiUiState.brainNotice])を、スナップショットから [DaidaiVoice] と同じ写しで組んで確かめる */
+    private fun VoiceSnapshot.noticeShown() = DaidaiUiState(
+        voice = state, micActive = micActive, cuePlaying = cuePlaying, brain = brain, preparing = preparing,
+    ).brainNotice != null
+
+    /**
+     * 通知の順序(1 往復ぶん)。201 のあとの最初の「脳つき」スナップショットは、マイク使用中のどのスナップショットよりも前で、
+     * 表記の条件を満たす(画面への配送は FIFO なので、表記が先に描かれる)。そこから録音が終わる(応答待ち)まで、表記が途切れない。
+     */
+    private fun assertNoticeComesFirstAndNeverBreaks(snaps: List<VoiceSnapshot>) {
+        val firstBrain = snaps.indexOfFirst { it.brain != null }
+        val firstMic = snaps.indexOfFirst { it.micActive }
+        assertTrue("脳つきのスナップショットがある", firstBrain >= 0)
+        assertTrue("マイク使用中のスナップショットがある", firstMic >= 0)
+        assertTrue("脳つきのスナップショット($firstBrain)が、マイク使用中のどれ($firstMic)よりも先", firstBrain < firstMic)
+        assertTrue("そのスナップショットが、表記の条件を満たす: ${snaps[firstBrain]}", snaps[firstBrain].noticeShown())
+        assertFalse("最初の脳つきは、まだ録音も合図もしていない準備中", snaps[firstBrain].micActive || snaps[firstBrain].cuePlaying)
+        assertTrue(snaps[firstBrain].preparing)
+        val end = snaps.indexOfFirst { it.state == VoiceState.WAITING }.let { if (it < 0) snaps.size else it }
+        for (i in firstBrain until end) assertTrue("録音が終わるまで表記が途切れない(#$i): ${snaps[i]}", snaps[i].noticeShown())
+    }
+
+    @Test fun theNoticeReachesTheScreenBeforeAnyMicSnapshotAfterACueTurn() {
+        val r = Rig()
+        r.brainIs(cloudDaidai)
+        r.startTurn(turn(plan()))
+        assertTrue(r.last.cuePlaying)
+        r.player.finish(true)
+        r.sim.settle()
+        val gap = r.listener.snaps.size
+        r.advance(VoiceLimits.CUE_ECHO_WAIT_MS)
+        assertEquals(VoicePhase.LISTENING, r.phase)
+        r.talk(440)
+        r.speech()
+        r.transcript("こんにちは")
+        assertNoticeComesFirstAndNeverBreaks(r.listener.snaps)
+        // 合図の終わり(cuePlaying=false)から録音の開始までの間のスナップショットにも表記が残る
+        val afterCue = r.listener.snaps.indexOfLast { it.preparing && !it.cuePlaying && it.brain != null && it.state == VoiceState.IDLE }
+        assertTrue("合図が終わって録音が始まる前のスナップショットがある", afterCue in 0 until gap + 1)
+        assertTrue(r.listener.snaps[afterCue].noticeShown())
+    }
+
+    @Test fun theNoticeReachesTheScreenBeforeAnyMicSnapshotInAFollowUpTurnWithoutACue() {
+        val r = Rig()
+        r.brainIs(cloudDaidai, host)
+        r.startTurn(turn())
+        r.talk(440)
+        r.reply()
+        r.player.finish(true)
+        r.sim.settle()
+        val before = r.listener.snaps.size
+        r.startTurn(turn(follow = true))
+        assertEquals(VoicePhase.LISTENING, r.phase)
+        r.talk(440)
+        val second = r.listener.snaps.drop(before)
+        assertNoticeComesFirstAndNeverBreaks(second)
+        assertEquals("2 往復目の脳", host, second.first { it.brain != null }.brain)
+    }
+
+    @Test fun theNoticeStaysThroughTheEchoWaitWhenTheCueWasHeard() {
+        val r = Rig()
+        r.brainIs(cloudDaidai)
+        r.startTurn(turn(plan()))
+        r.player.finish(true)
+        r.sim.settle()
+        // 残響の待ちの間(マイクはまだ開いていない)も、表記の条件を満たす
+        assertEquals(VoicePhase.PREPARING, r.phase)
+        assertFalse(r.last.micActive)
+        assertFalse(r.last.cuePlaying)
+        assertTrue("残響の待ちの間: ${r.last}", r.last.noticeShown())
+    }
+
+    @Test fun anOldHostGetsNoNoticeInAnySnapshot() {
+        val r = Rig()
+        r.brainIs(null)
+        r.startTurn(turn(plan()))
+        r.player.finish(true)
+        r.sim.settle()
+        r.advance(VoiceLimits.CUE_ECHO_WAIT_MS)
+        r.talk(440)
+        assertTrue(r.listener.snaps.none { it.noticeShown() })
+    }
+
     @Test fun snapshotsBeforeTheCreateResponseCarryNoBrain() {
         val r = Rig()
         r.bridge.createReply = { n -> ok(SessionInfo("s-$n", r.bridge.hostLimits, brain = cloudDaidai), latencyMs = 100) }

@@ -42,6 +42,14 @@ class DaidaiBrainNoticeTest {
         assertEquals("マイクが録音中なら状態に関わらず", expected, DaidaiUiState(voice = VoiceState.WAITING, micActive = true, brain = cloud).brainNotice)
     }
 
+    @Test fun shownWhilePreparingAfterTheCreateResponse() {
+        val cloud = brain(BrainName.DAIDAI, BrainEgress.CLOUD)
+        assertEquals("だいだい(クラウド)に送ります", DaidaiUiState(voice = VoiceState.IDLE, preparing = true, brain = cloud).brainNotice)
+        assertNull("準備中でも脳が無い(作成の応答の前・旧ホスト)なら出さない", DaidaiUiState(voice = VoiceState.IDLE, preparing = true, brain = null).brainNotice)
+        assertNull("準備中でなく、マイクも閉じている待機中は出さない", DaidaiUiState(voice = VoiceState.IDLE, preparing = false, brain = cloud).brainNotice)
+        assertNull("応答待ち(WAITING)は出さない", DaidaiUiState(voice = VoiceState.WAITING, preparing = false, brain = cloud).brainNotice)
+    }
+
     @Test fun notShownWhileTheMicIsClosed() {
         val cloud = brain(BrainName.DAIDAI, BrainEgress.CLOUD)
         for (s in listOf(VoiceState.IDLE, VoiceState.WAITING, VoiceState.REPLYING, VoiceState.ERROR)) {

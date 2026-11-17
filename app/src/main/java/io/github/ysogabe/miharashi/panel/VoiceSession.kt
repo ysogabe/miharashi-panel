@@ -422,6 +422,10 @@ class VoiceSession(
         limits = EffectiveLimits.resolve(info.limits)
         // 脳の区分は、合図(startCue)・マイクを開く(openMic)のどのスナップショットよりも前に持つ(マイクが開いている間は必ず表記が出せるように)
         brain = info.brain
+        // この脳が載ったスナップショットを、ここで 1 回出す(onConversation・startSse・startCue / openMic より前)。画面への配送は FIFO なので、
+        // 表記はマイク使用中のスナップショットより先に届く。旧ホスト(brain なし)は内容が変わらず、重複として出ない
+        emit()
+        if (_phase != VoicePhase.PREPARING || g != gen) return
         // ハンドルの持ち主は呼び出し側。startSse / openMic より前に渡す(openMic が取消で止まる場合でも、この通知は出ている)
         info.conversation?.let { c -> safe { listener.onConversation(tag, c) } }
         startSse()
@@ -917,7 +921,7 @@ class VoiceSession(
         val snap = VoiceSnapshot(
             state = displayState(), transcript = transcript, reply = reply, error = error,
             diagnostics = diagnostics, micActive = recordingNow(), noticePose = noticePose, active = _phase.isActive,
-            cuePlaying = cuePlaying && _phase == VoicePhase.PREPARING, brain = brain,
+            cuePlaying = cuePlaying && _phase == VoicePhase.PREPARING, brain = brain, preparing = _phase == VoicePhase.PREPARING,
         )
         if (snap == lastSnapshot) return
         lastSnapshot = snap

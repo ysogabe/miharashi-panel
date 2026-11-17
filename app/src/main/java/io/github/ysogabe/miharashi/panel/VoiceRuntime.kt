@@ -117,9 +117,14 @@ data class VoiceSnapshot(
      * 合図・マイクを開くより前のスナップショットから載る。旧ホストや作成前・作成失敗では null。往復ごとに決め、持ち越さない。
      */
     val brain: BrainInfo? = null,
+    /**
+     * セッションが準備中(PREPARING。作成の応答を待つ間・開始の合図の前後・残響の待ち・マイクを開く処理の間)。
+     * 表示用の [state] は PREPARING を IDLE に畳むので、「作成の応答を受けてから録音が始まるまで」を [brain] とあわせて表記の対象にする(R15)。
+     */
+    val preparing: Boolean = false,
 ) {
     override fun toString() = "VoiceSnapshot(state=$state, transcript=${transcript.length}chars, reply=${reply.length}chars, " +
-        "error=$error, mic=$micActive, active=$active, brain=$brain)"
+        "error=$error, mic=$micActive, active=$active, preparing=$preparing, brain=$brain)"
 }
 
 /** [VoiceSession] の通知。**セッションのスレッドで呼ばれる**ので、UI への反映は呼び出し側が main へ post する。 */

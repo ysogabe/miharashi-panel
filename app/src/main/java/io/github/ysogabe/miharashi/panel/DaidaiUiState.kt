@@ -71,13 +71,15 @@ data class DaidaiUiState(
     val cuePlaying: Boolean = false,
     /** 今の往復の脳(段階 2b-2)。[brainNotice] の元。null(旧ホスト・作成前)なら表記を出さない */
     val brain: BrainInfo? = null,
+    /** セッションが準備中(作成の応答のあと〜録音が始まる前。合図の前後・残響の待ちを含む)。[brainNotice] の条件 */
+    val preparing: Boolean = false,
 ) {
     /**
-     * マイクが開いている間(聞き取り中・認識中・マイクが録音中)と、開始の合図の再生中だけ、どこへ送るかの表記(R15)。
-     * それ以外(待機・応答待ち・返答中・エラー)と、脳が分からないとき(旧ホスト)は null。
+     * 作成の応答を受けてから録音が終わるまで(準備中・合図の再生中・聞き取り中・認識中・マイクが録音中)、途切れずに出す、どこへ送るかの表記(R15)。
+     * それ以外(待機・応答待ち・返答中・エラー)と、脳が分からないとき(旧ホスト・作成前)は null。
      */
     val brainNotice: String?
-        get() = if (voice == VoiceState.LISTENING || voice == VoiceState.HEARING || micActive || cuePlaying) DaidaiText.brainNotice(brain) else null
+        get() = if (preparing || voice == VoiceState.LISTENING || voice == VoiceState.HEARING || micActive || cuePlaying) DaidaiText.brainNotice(brain) else null
 
     /** アバターのポーズ(§5.5 の対応。通知のポーズは待機中のカード表示のときだけ使う。合図の再生中は talking) */
     val avatarPose: String get() = if (cuePlaying) DaidaiPose.TALKING else DaidaiText.pose(voice, noticePose, notice != null)
