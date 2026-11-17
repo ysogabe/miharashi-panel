@@ -110,6 +110,8 @@ data class VoiceSnapshot(
      * B の無操作タイマーを止める判定([PageController.sessionActive])はこの値を使う。
      */
     val active: Boolean = false,
+    /** 開始の合図(挨拶・チャイム)を鳴らしている(段 G。アバターを talking にする。マイクはまだ閉じている) */
+    val cuePlaying: Boolean = false,
 ) {
     override fun toString() = "VoiceSnapshot(state=$state, transcript=${transcript.length}chars, reply=${reply.length}chars, " +
         "error=$error, mic=$micActive, active=$active)"
@@ -129,6 +131,19 @@ interface VoiceSessionListener {
      * `follow` / `tag`: そのセッションの [TurnRequest.follow] / [TurnRequest.tag](続きの開始音と歯止めの判断に使う。同じく通知の時点の値)。
      */
     fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag)
+
+    /**
+     * [onMicOpened] の、合図の段の結果つきの版(段 G)。[VoiceSession] はこちらを呼ぶ。既定は 3 引数の版を呼ぶ(合図を知らない実装・試験のフェイク)。
+     * 例外の扱いは [onMicOpened] と同じ(録音を続けず `mic_unavailable`)。
+     */
+    fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag, cue: MicCue) = onMicOpened(autoStarted, follow, tag)
+
+    /**
+     * 開始の合図(挨拶か、挨拶が無いときのチャイム)を鳴らし始めた(段 G。セッションのスレッドで、1 セッションに 1 回だけ。マイクはまだ閉じている)。
+     * `greeting`: 挨拶を鳴らし始めたなら、その [CueChoice]。チャイムから始めたなら null。挨拶に失敗して続けて鳴らすチャイムでは呼ばない。
+     * 例外は握りつぶされる(合図は止めない)。
+     */
+    fun onCueStarted(autoStarted: Boolean, tag: TurnTag, greeting: CueChoice?) {}
 
     /**
      * 作成が成功して、201 に `conversation` があった(現在の世代の作成だけ。**`startSse` / マイクを開くより前**に、セッションのスレッドで 1 回)。

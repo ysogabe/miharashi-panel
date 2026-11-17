@@ -53,7 +53,40 @@ data class TurnRequest(
     val noSpeechS: Long = VoiceLimits.NO_SPEECH_DEFAULT_S,
     val follow: Boolean = false,
     val tag: TurnTag = TurnTag.NONE,
+    /**
+     * 開始の合図(段 G。設計書(段階 2)§5.8)。非 null なら、作成のあとマイクを閉じたまま合図を鳴らし、鳴り終えてからマイクを開く。
+     * null なら合図の段を置かない(続きの往復・旧来の呼び方。マイクを開いた直後の開始音と 400 ms の破棄のまま)。続きの往復([follow])では無視する。
+     */
+    val cue: StartCuePlan? = null,
 )
+
+/**
+ * 開始の合図の段の中身(段 G)。[greeting] は検証済みの挨拶の WAV(取得できていなければ null)、[chime] は戻りのチャイム([StartChime])。
+ * [choice] は選んだ挨拶([greeting] が null でも、何を選んだかを持つ)。WAV を持つので `data class` にしない(`toString` に中身を出さない)。
+ *
+ * 挨拶の WAV は**読むときに引く**([lookup]。挨拶の置き場はどのスレッドから読んでもよい)。[VoiceSession] は作成が返ってから 1 回だけ読むので、
+ * 入場の直前に頼んだ取り直しが作成の往復のあいだに終われば、その入場で使える。
+ */
+class StartCuePlan(private val lookup: () -> ByteArray?, val chime: ByteArray, val choice: CueChoice?) {
+    constructor(greeting: ByteArray?, chime: ByteArray, choice: CueChoice?) : this({ greeting }, chime, choice)
+
+    /** 今の挨拶の WAV(無い・引けなければ null) */
+    val greeting: ByteArray? get() = try { lookup() } catch (_: Exception) { null }
+
+    override fun toString() = "StartCuePlan(choice=${choice?.name})"
+}
+
+/** マイクを開いたときの、合図の段の結果([VoiceSessionListener.onMicOpened] に渡す) */
+enum class MicCue {
+    /** 合図の段が無い(続きの往復・旧来の呼び方)。今までどおり開始音を鳴らす */
+    NONE,
+
+    /** 挨拶かチャイムを最後まで鳴らした。開始音は鳴らさない */
+    HEARD,
+
+    /** 挨拶もチャイムも鳴らせなかった。最後の手段として開始音(ビープ)を鳴らす */
+    FAILED,
+}
 
 /**
  * 往復の結果(設計書(段階 2)§5.2 の表)。[canContinue] は結果だけから決まる「続けてよいか」で、会話の上限・在席・画面の状態などの

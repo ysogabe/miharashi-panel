@@ -1,5 +1,7 @@
 package io.github.ysogabe.miharashi.panel
 
+import java.util.TimeZone
+
 /**
  * 音声セッション一式(スレッド・通信・マイク・再生)。本番は [AndroidVoiceRuntime]、試験ではフェイク。
  * **マイクを開く経路は [start](と [retry])だけ**で、`VoiceSession.start` に行き着く。
@@ -78,6 +80,18 @@ fun interface VoiceRuntimeFactory {
  * - 自動切替の歯止め(R5): [AutoSwitchPolicy] へ渡すのは会話の**最初の往復**だけ。自動起動の会話が上限・期限・`continue=false` で終わったときだけ
  *   [AutoSwitchPolicy.onAutoConversationLimited](S2-U14)。
  * - 会話の間(往復の間の残響の待ち・作成の待ちを含む)は [PageController.sessionActive] を true にして B の無操作タイマーを止める。
+ *
+ * ## 開始の合図(段 G。設計書(段階 2)§5.8)
+ * 会話の**最初の往復**にだけ、合図([StartCuePlan])を付ける(続きの往復は今までどおり別の短い音。S2-U10)。挨拶は往復に数えない。
+ * - 挨拶の選び方は [StartCue.choose]。場面は会話の起点([Origin])で決める: スワイプ → `g_*_swipe`、通知の自動切替 → `g_*_notice`、
+ *   ERROR のタップでの再試行 → `g_retry`(前の会話の `reason` が `notification` でも)。時間帯の挨拶は、その時間帯で最初の 1 回だけ。
+ *   「挨拶済みの時間帯」はメモリにだけ持ち(保存しない)、**挨拶を鳴らし始めたとき**([VoiceSessionListener.onCueStarted])に覚える。
+ *   チャイムに戻った・再試行だった、では使わない。
+ * - 挨拶の WAV は [CueSource](接続先ごと。`onPause` で runtime を捨てても残す)から取る。無ければ null のまま渡し、セッションがチャイムに戻す。
+ *   取り直しは `onResume`・入場・再試行の前に [CueSource.refreshIfDue](待たない)。
+ * - 自動切替の歯止め(R5)の [AutoSwitchPolicy.onAutoMicStarted] は、合図の段があるセッションでは**合図を鳴らし始めたとき**に呼ぶ
+ *   (途中で取り消しても、端末が自分から喋ったことは数える)。合図の段が無いときだけ、今までどおりマイクを開いたときに呼ぶ。1 セッションに 1 回。
+ * - 開始音(ビープ)は、合図の段が無いとき([MicCue.NONE])と、挨拶もチャイムも鳴らせなかったとき([MicCue.FAILED])だけ鳴らす。
  */
 class DaidaiVoice(
     private val pages: PageController,
@@ -94,11 +108,24 @@ class DaidaiVoice(
     private val presence: (Long) -> GateVerdict,
     /** 残響の待ち(再生の完了からマイクを開くまで)。本番は [ECHO_WAIT_MS]。設定画面・Settings には出さない */
     private val echoWaitMs: Long = ECHO_WAIT_MS,
+    /** 挨拶の置き場(接続先ごと)。本番は [CueStore.create]。既定は「挨拶なし」(合図はチャイムになる) */
+    private val cueFactory: CueSourceFactory = CueSourceFactory { null },
+    /** 端末の時計(エポックのミリ秒。時間帯の挨拶にだけ使う。[nowMs] は単調な時計で、時間帯には使えない) */
+    private val wallClockMs: () -> Long = System::currentTimeMillis,
+    /** その時刻のタイムゾーンの UTC からのずれ(`TimeZone.getDefault()`。`PanelView.tzOffsetMs` と同じ) */
+    private val tzOffsetMs: (Long) -> Long = { TimeZone.getDefault().getOffset(it).toLong() },
 ) : DaidaiEntryListener, PageListener {
     private var runtime: VoiceRuntime? = null
     private var runtimeListener: Listener? = null
     private var runtimeKey: Pair<String, String>? = null
     private var runtimeId = 0
+
+    /** 挨拶の置き場と、その接続先 */
+    private var cues: CueSource? = null
+    private var cuesKey: Pair<String, String>? = null
+
+    /** 最後に時間帯の挨拶を鳴らし始めた時間帯の印([StartCue.daypartKey])。メモリだけ(アプリの再起動で消えてよい) */
+    private var greetedDaypart: Long? = null
 
     /** 会話の終わりをホストへ送った(runtime に頼んだ)ハンドル。新しい 16 件だけ持ち、同じハンドルを 2 回頼まない(ホストへの重複は [DeleteOnCloseBridge] も抑える) */
     private val endedHandles = LinkedHashSet<String>()
@@ -180,7 +207,7 @@ class DaidaiVoice(
             if (s == null) baseUi
             else baseUi.copy(
                 voice = s.state, transcript = s.transcript, reply = s.reply, error = s.error, diagnostics = s.diagnostics,
-                micActive = s.micActive, noticePose = s.noticePose ?: baseUi.noticePose,
+                micActive = s.micActive, noticePose = s.noticePose ?: baseUi.noticePose, cuePlaying = s.cuePlaying,
             ),
         )
     }
@@ -239,6 +266,7 @@ class DaidaiVoice(
             else -> return
         }
         val rt = ensureRuntime(s) ?: return
+        ensureCues(s)?.refreshIfDue() // 失敗のあとなら取り直す(待たない。挨拶はセッションが作成のあとに引くので、作成の往復のあいだに終われば今回から使える)
         endConversation() // 前の会話が残っていれば先に終える(世代を進め、ハンドルがあれば終わりの通知)
         rt.cancel() // 念のため(進行中のものは start が無視するので、必ず空にしてから)
         val origin = if (entry.reason == PageReason.AUTO_NOTICE) Origin.AUTO_NOTICE else Origin.SWIPE
@@ -258,10 +286,52 @@ class DaidaiVoice(
         return c
     }
 
-    /** 最初の往復の要求: `conversation: {}`(新しい会話)、通常の無発話の待ち、`follow = false` */
+    /** 最初の往復の要求: `conversation: {}`(新しい会話)、通常の無発話の待ち、`follow = false`、開始の合図つき(段 G) */
     private fun firstTurnRequest(c: Conversation) = TurnRequest(
         c.reason, c.noticeId, c.autoStarted, conversation = ConversationParam(null), follow = false, tag = TurnTag(c.gen, 1),
+        cue = cuePlan(c.origin),
     )
+
+    /** 会話の起点から合図を選ぶ(段 G)。挨拶の WAV が無ければ `greeting = null`(セッションがチャイムに戻す) */
+    private fun cuePlan(origin: Origin): StartCuePlan {
+        val scene = when (origin) {
+            Origin.SWIPE -> CueScene.SWIPE
+            Origin.AUTO_NOTICE -> CueScene.NOTIFICATION
+            Origin.RETRY -> CueScene.RETRY
+        }
+        val now = wallClockMs()
+        val offset = try { tzOffsetMs(now) } catch (_: Exception) { 0L }
+        val choice = StartCue.choose(scene, now, offset, greetedDaypart)
+        val source = cues
+        // 挨拶の WAV はセッションが作成のあとに引く(入場の直前に頼んだ取り直しが、作成の往復のあいだに終われば使える)
+        return StartCuePlan({ source?.get(choice.name) }, StartChime.wav(), choice)
+    }
+
+    /** 接続先の挨拶の置き場(作り直しは接続先が変わったときだけ。未設定なら捨てる) */
+    private fun ensureCues(s: DaidaiSettings): CueSource? {
+        if (!s.isConfigured()) {
+            disposeCues()
+            return null
+        }
+        val key = s.key()
+        if (cues != null && cuesKey == key) return cues
+        disposeCues()
+        cues = try { cueFactory.create(s) } catch (_: Exception) { null }
+        cuesKey = key
+        return cues
+    }
+
+    private fun disposeCues() {
+        val c = cues ?: return
+        cues = null
+        cuesKey = null
+        try { c.close() } catch (_: Exception) { }
+    }
+
+    /** 挨拶を鳴らし始めた(メインスレッド)。時間帯の挨拶なら、その時間帯を挨拶済みにする */
+    private fun onCueStartedOnMain(greeting: CueChoice?) {
+        greeting?.daypartKey?.let { greetedDaypart = it }
+    }
 
     /** ERROR 表示のタップ。**利用者のタップだけ**が呼ぶ(自動の再試行はしない)。B に落ち着いていて、ERROR が出ているときだけ */
     fun onErrorTapped() {
@@ -273,6 +343,7 @@ class DaidaiVoice(
         // 二重に新しい会話を作ると、進行中の往復の印と今の会話の世代が食い違い、会話が終わらなくなる
         conversation?.let { if (it.origin == Origin.RETRY && !it.sawActive) return }
         val reason = lastReason ?: return
+        ensureCues(settings())?.refreshIfDue()
         // 再試行は利用者の操作で、**新しい会話**にする(世代を進め、`conversation: {}` から)。autoStarted = false なので、
         // 自動切替の歯止めには数えず、照度が取れなくても続く(S2-U9)。ホストへの reason と notice_id は直前の会話の値のまま
         endConversation()
@@ -296,12 +367,20 @@ class DaidaiVoice(
         cancel()
         val key = runtimeKey
         if (runtime != null && key != settings().key()) disposeRuntime()
+        // 挨拶は最初の入場より前に取っておく(接続先が変わっていれば作り直す。未設定なら捨てる)
+        ensureCues(settings())?.refreshIfDue()
     }
 
     /** `onPause`・破棄: 取り消してスレッドなどを片づける */
     fun stop() {
         cancel()
         disposeRuntime()
+    }
+
+    /** `onDestroy`: [stop] に加えて、挨拶の置き場も閉じる(取得の途中でも、以後は取りに行かない) */
+    fun destroy() {
+        stop()
+        disposeCues()
     }
 
     private fun cancelPendingStart() {
@@ -501,19 +580,30 @@ class DaidaiVoice(
             main.post { if (id == runtimeId) onSnapshotOnMain(snapshot) }
         }
 
-        override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag) {
+        override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag) = onMicOpened(autoStarted, follow, tag, MicCue.NONE)
+
+        override fun onCueStarted(autoStarted: Boolean, tag: TurnTag, greeting: CueChoice?) {
+            val startedAtMs = nowMs()
+            main.post { onCueStartedOnMain(greeting) }
+            // 歯止め(R5): 合図の段があるセッションでは、マイクより前の「端末が喋り始めた」時点で数える(途中の取消でも数える)。
+            // 合図は最初の往復にだけ付くが、念のため続きの往復の印(turn > 1)では数えない
+            if (autoStarted && tag.turn <= 1) main.post { policy.onAutoMicStarted(startedAtMs) }
+        }
+
+        override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag, cue: MicCue) {
             val openedAtMs = nowMs() // 開いた時刻。開始音(と main への配送)の遅れを含めない
             // 開始音: セッションのスレッドで鳴らす。例外は録音を止める理由にしない(ここで投げるとセッションが終わる)。
-            // 続きの往復は、最初の往復と区別できる別の音(S2-U10)
+            // 続きの往復は、最初の往復と区別できる別の音(S2-U10)。最初の往復は、合図(挨拶・チャイム)を鳴らし終えていれば鳴らさない
             try {
-                if (follow) startSound.playFollow() else startSound.play()
+                if (follow) startSound.playFollow() else if (cue != MicCue.HEARD) startSound.play()
             } catch (_: Exception) {
             }
             // 実際にマイクを開いたセッションの値(autoStarted・follow)と時刻を、いまここで取り出して不変の値として投稿する。
             // main で可変のフィールドを読まない(手動のセッションへ切り替わっても、取り違えない)。
             // 作り直し前(破棄済み)の runtime で実際に開いたマイクも、歯止めの記録としては数える(画面への反映だけが現行の世代に限られる)。
             // 歯止め(R5)に渡すのは会話の最初の往復だけ: 続きの往復(follow)のマイクはクールダウン・1 時間 6 回に数えない
-            if (autoStarted && !follow) {
+            // 合図の段があったセッション(HEARD・FAILED)は、合図を鳴らし始めたときに数え済み
+            if (autoStarted && !follow && cue == MicCue.NONE) {
                 main.post { policy.onAutoMicStarted(openedAtMs) }
             }
         }

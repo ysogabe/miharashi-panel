@@ -59,6 +59,8 @@ class PanelActivityConversationTest {
 
     @Before fun install() {
         AutoSwitchDiagnostics.clear()
+        // 挨拶の取得で本物のホストへ通信しない(段 G)
+        PanelActivity.testCueFactory = CueSourceFactory { null }
         PanelActivity.testVoiceRuntimeFactory = VoiceRuntimeFactory { s, l -> ConvActivityRuntime(s, l).also { runtimes += it } }
         PanelActivity.testStartSound = object : StartSound {
             override fun play() { tones++ }
@@ -67,6 +69,7 @@ class PanelActivityConversationTest {
     }
 
     @After fun uninstall() {
+        PanelActivity.testCueFactory = null
         PanelActivity.testVoiceRuntimeFactory = null
         PanelActivity.testStartSound = null
         AutoSwitchDiagnostics.clear()

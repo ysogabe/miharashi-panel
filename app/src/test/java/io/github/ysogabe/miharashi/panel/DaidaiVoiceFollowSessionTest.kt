@@ -43,7 +43,7 @@ class DaidaiVoiceFollowSessionTest {
         val voice = DaidaiVoice(
             pages, policy, { configured },
             VoiceRuntimeFactory { _, listener ->
-                val session = VoiceSession(audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0")
+                val session = VoiceSession(audio, bridge, CueRejectingPlayer(player), sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0")
                 object : VoiceRuntime {
                     override fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) = session.start(reason, noticeId, autoStarted)
                     override fun retry() = session.retry()

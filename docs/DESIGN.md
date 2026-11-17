@@ -194,7 +194,8 @@ KioskSync(status / SSE) → DaidaiController → NoticeTracker → AutoSwitchPol
 | `BridgeClient` | ブリッジとの HTTP + SSE。URL は固定のパスから自分で組み、応答のパスは使わない。リダイレクトに追従しない。`Last-Event-ID` で再生、同じ seq の再送は冪等 |
 | `MicAudioSource` | `AudioRecord`(16 kHz モノラル PCM16)。メモリのキューだけで、ファイルに書かない |
 | `WavPlayer` / `WavValidator` | 返答の WAV をメモリ上で検証して `AudioTrack` で再生する。ファイルに書かない |
-| `StartTone` | マイクを開くときの短い開始音。続きの往復は別の音(DTMF の「1」、100 ms) |
+| `StartCue` / `CueStore` / `StartChime` | 会話の最初の開始の合図(段 G)。場面と時間帯で挨拶を選び(`StartCue`)、ホストが配る WAV を取ってメモリに持ち(`CueStore`。sha256・形・5 秒以下を検査)、無ければアプリの中で作るチャイム(`StartChime`)。`VoiceSession` が、作成 → マイクを閉じたまま再生 → 300 ms → マイク(最初の 200 ms を捨てる)の順で鳴らす |
+| `StartTone` | 続きの往復の短い音(DTMF の「1」、100 ms)と、挨拶もチャイムも鳴らせなかったときの最後の手段のビープ |
 | `BridgeHealth` | 設定画面の接続テスト(`GET /v1/health`) |
 
 ブリッジの要求仕様(エンドポイント、エラー、冪等、期限)は [設計書 §5.2](daidai-screen/design.md) です。Panel 側の絶対上限は同 §5.8 にあり、ホストの値では超えられません。

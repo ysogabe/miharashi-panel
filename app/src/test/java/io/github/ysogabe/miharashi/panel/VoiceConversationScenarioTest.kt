@@ -296,7 +296,7 @@ class VoiceConversationScenarioTest {
         private val dob = DeleteOnCloseBridge(BridgeClient(settings.url, settings.token))
         private val spy = VoiceBridgeScenarioTest.SpyBridge(dob)
         private val session = VoiceSession(
-            env.audio, spy, env.player, env.sim, env.sim, VoiceBridgeScenarioTest.TrackingWorker(spy, env.sim, env.pool), listener,
+            env.audio, spy, CueRejectingPlayer(env.player), env.sim, env.sim, VoiceBridgeScenarioTest.TrackingWorker(spy, env.sim, env.pool), listener,
             clientId = "echo-show-5", appVersion = "0.3.0",
         )
 

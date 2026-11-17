@@ -68,6 +68,15 @@ enum class VoicePhase {
  * 開いてから [startToneGuardMs] の間に届いた録音は捨てる(送らない・無音判定にも使わない)。`mic_silent` の判定窓と 45 秒の上限は、
  * 前者は保護時間の後から、後者はマイクを開いた時刻から数える。
  *
+ * ## 開始の合図(段 G。設計書(段階 2)§5.8.4)
+ * [TurnRequest.cue] があれば(会話の最初の往復だけ。続きの往復では無視する)、作成が成功して `startSse` したあと、**マイクを閉じたまま**
+ * 挨拶を [player] で鳴らす(状態は PREPARING のまま。スナップショットの `cuePlaying` を立てる)。鳴り終えたら [cueEchoWaitMs] 待ってマイクを開き、
+ * 開いた直後の [cueGuardMs] の録音を捨てる(開始音は鳴らさない)。挨拶が無い・検査に落ちた・`onDone(false)`・期限(実データの長さ + [VoiceLimits.CUE_PLAYBACK_MARGIN_MS])切れなら、
+ * 同じ順序でチャイムを鳴らす。チャイムも鳴らせなければ、今までどおりマイクを開いた直後に開始音を鳴らし [startToneGuardMs] を捨てる
+ * (自動起動で合図が 0 回になる経路を作らない)。合図の段の結果は [VoiceSessionListener.onMicOpened] の `cue` で渡す。
+ * 再生の完了は世代と再生ごとの番号で照合する(期限で止めた挨拶の遅れた `onDone(false)` を、チャイムの結果と取り違えない)。
+ * 合図の最中の取消は、[finish] が再生を止める(マイクは一度も開かない)。挨拶は往復に数えない(1 セッションの中の、マイクの前の段)。
+ *
  * ## ログ
  * Android に依存しない(`Log` を使わない)。認識テキスト・返答・トークンは `toString` にも例外メッセージにも入れない。
  */
@@ -85,8 +94,12 @@ class VoiceSession(
     /** セッションの総時間(テスト用に差し替えられる。本番は [VoiceLimits.SESSION_MAX_MS]) */
     private val sessionMaxMs: Long = VoiceLimits.SESSION_MAX_MS,
     private val sseBackoff: () -> Backoff = { Backoff(500, 4_000) },
+    /** 合図のあと、マイクを開いた直後に捨てる長さ(段 G) */
+    private val cueGuardMs: Long = VoiceLimits.CUE_GUARD_MS,
+    /** 合図の再生の完了からマイクを開くまでの残響の待ち(段 G) */
+    private val cueEchoWaitMs: Long = VoiceLimits.CUE_ECHO_WAIT_MS,
 ) {
-    private enum class Timer { TOTAL, CREATE, CHUNK, MIC_CAP, MIC_SILENT, NO_SPEECH, REPLY, REPLY_AUDIO, PLAYBACK, SSE_RETRY, ERROR_DISPLAY }
+    private enum class Timer { TOTAL, CREATE, CHUNK, MIC_CAP, MIC_SILENT, NO_SPEECH, REPLY, REPLY_AUDIO, PLAYBACK, SSE_RETRY, ERROR_DISPLAY, CUE, CUE_GAP }
 
     private class Chunk(val seq: Int, val pcm: ByteArray, val final: Boolean) {
         var attempt = 0
@@ -112,6 +125,16 @@ class VoiceSession(
     private var diagnostics: String? = null
     private var noticePose: String? = null
     private var lastSnapshot: VoiceSnapshot? = null
+
+    // ---- 開始の合図(段 G)
+    private var cuePlan: StartCuePlan? = null
+    private var cueResult = MicCue.NONE
+    private var cuePlaying = false
+    private var cueIsGreeting = false
+    private var cueToken = 0
+
+    /** このセッションでマイクを開いた直後に捨てる長さ(合図を鳴らし終えたら [cueGuardMs]、それ以外は [startToneGuardMs]) */
+    private var guardMs = startToneGuardMs
     private val timers = HashMap<Timer, Cancelable>()
     private val timerTokens = HashMap<Timer, Int>()
     private var timerCounter = 0
@@ -218,6 +241,7 @@ class VoiceSession(
         autoStarted = request.autoStarted
         follow = request.follow
         tag = request.tag
+        cuePlan = if (request.follow) null else request.cue
         openPermit = permit // これ以後の cancel / stopMicNow / close で、この許可は無効になる
         _phase = VoicePhase.PREPARING
         val g = gen
@@ -279,6 +303,11 @@ class VoiceSession(
         replyHandled = false
         replyAudio = null
         fetchToken = 0
+        cuePlan = null
+        cueResult = MicCue.NONE
+        cuePlaying = false
+        cueIsGreeting = false
+        guardMs = startToneGuardMs
     }
 
     private fun clearOutputs() {
@@ -304,7 +333,9 @@ class VoiceSession(
         if (id != null) { // 4. 最良努力でホストのセッションを消す
             runBlocking({ bridge.cancel(id) }) { }
         }
-        safe { player.stop() } // 5. 再生を止める
+        safe { player.stop() } // 5. 再生を止める(合図の最中なら合図も)
+        cuePlaying = false
+        cueToken++
         queue.clear()
         queuedBytes = 0
         carry = -1
@@ -388,6 +419,79 @@ class VoiceSession(
         // ハンドルの持ち主は呼び出し側。startSse / openMic より前に渡す(openMic が取消で止まる場合でも、この通知は出ている)
         info.conversation?.let { c -> safe { listener.onConversation(tag, c) } }
         startSse()
+        if (cuePlan != null) startCue(g) else openMic(g)
+    }
+
+    // =========================================================================================
+    // 開始の合図(段 G)
+
+    /** 作成のあと、マイクを開く前に合図を鳴らし始める。取消が先に来ていれば鳴らさずに取消として終える */
+    private fun startCue(g: Int) {
+        val plan = cuePlan ?: return openMic(g)
+        if (micPermit.get() != openPermit) {
+            cancelledToIdle()
+            return
+        }
+        val greeting = plan.greeting
+        val first = if (greeting != null && cueDurationMs(greeting) != null) greeting else null
+        safe { listener.onCueStarted(autoStarted, tag, if (first != null) plan.choice else null) }
+        if (first != null) playCue(g, first, isGreeting = true) else playChime(g)
+    }
+
+    private fun playChime(g: Int) = playCue(g, cuePlan?.chime, isGreeting = false)
+
+    /** 1 本の合図を鳴らす。WAV として読めない・`play` が投げた・`onDone(false)`・期限切れは [onCueDone] の失敗になる */
+    private fun playCue(g: Int, wav: ByteArray?, isGreeting: Boolean) {
+        val token = ++cueToken
+        cueIsGreeting = isGreeting
+        val duration = wav?.let { cueDurationMs(it) }
+        if (wav == null || duration == null) {
+            onCueDone(g, token, false)
+            return
+        }
+        cuePlaying = true
+        emit()
+        if (_phase != VoicePhase.PREPARING || g != gen) return
+        arm(Timer.CUE, duration + VoiceLimits.CUE_PLAYBACK_MARGIN_MS) { onCueDone(g, token, false) }
+        try {
+            player.play(wav) { ok -> scheduler.post { onCueDone(g, token, ok) } }
+        } catch (_: Exception) {
+            onCueDone(g, token, false)
+        }
+    }
+
+    /** 合図の WAV の長さ(実データ)。検査に落ちる・5 秒を超えるなら null */
+    private fun cueDurationMs(wav: ByteArray): Long? = try {
+        val info = WavValidator.validate(wav)
+        if (info.dataBytes.toLong() * 1000 > VoiceLimits.CUE_MAX_MS * info.sampleRate.toLong() * 2) null else info.durationMs
+    } catch (_: WavFormatException) {
+        null
+    }
+
+    private fun onCueDone(g: Int, token: Int, ok: Boolean) {
+        if (g != gen || _phase != VoicePhase.PREPARING || token != cueToken) return
+        cueToken++ // この再生の通知は 1 回だけ(期限と onDone の両方が来ても)
+        cancelTimer(Timer.CUE)
+        if (ok) {
+            cueResult = MicCue.HEARD
+            guardMs = cueGuardMs
+            cuePlaying = false
+            emit()
+            if (_phase != VoicePhase.PREPARING || g != gen) return
+            arm(Timer.CUE_GAP, cueEchoWaitMs) { openMic(g) }
+            return
+        }
+        safe { player.stop() }
+        if (cueIsGreeting) { // 挨拶を鳴らせなかった: 同じ順序でチャイム
+            playChime(g)
+            return
+        }
+        // チャイムも鳴らせなかった: 最後の手段として、マイクを開いた直後に開始音(ビープ)と 400 ms の破棄
+        cueResult = MicCue.FAILED
+        guardMs = startToneGuardMs
+        cuePlaying = false
+        emit()
+        if (_phase != VoicePhase.PREPARING || g != gen) return
         openMic(g)
     }
 
@@ -442,11 +546,11 @@ class VoiceSession(
         sending = true
         _phase = VoicePhase.LISTENING
         arm(Timer.MIC_CAP, VoiceLimits.MIC_MAX_MS) { onMicCap() }
-        arm(Timer.MIC_SILENT, startToneGuardMs + VoiceLimits.MIC_SILENT_WINDOW_MS) { onMicSilentCheck() }
+        arm(Timer.MIC_SILENT, guardMs + VoiceLimits.MIC_SILENT_WINDOW_MS) { onMicSilentCheck() }
         emit() // マイク使用中のスナップショットの通知が失敗したら、ここでセッションが終わっている
         if (!_phase.isMicPhase) return
         try {
-            listener.onMicOpened(autoStarted, follow, tag)
+            listener.onMicOpened(autoStarted, follow, tag, cueResult)
         } catch (_: Exception) {
             // 開始音を鳴らせなかった(利用者に録音の合図が届かない)まま録音を続けない。例外のメッセージは診断に載せない
             fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: start tone notify failed")
@@ -486,7 +590,7 @@ class VoiceSession(
 
     private fun onPcm(g: Int, raw: ByteArray) {
         if (g != gen || !_phase.isMicPhase || !micOpen) return
-        if (clock.nowMs() - micOpenedAtMs < startToneGuardMs) return // 開始音の間は捨てる
+        if (clock.nowMs() - micOpenedAtMs < guardMs) return // 開始音(合図のあとは残響の尾)の間は捨てる
         var bytes = raw
         if (carry >= 0) { // 2 バイト境界を保つ
             bytes = ByteArray(raw.size + 1).also { it[0] = carry.toByte(); System.arraycopy(raw, 0, it, 1, raw.size) }
@@ -807,6 +911,7 @@ class VoiceSession(
         val snap = VoiceSnapshot(
             state = displayState(), transcript = transcript, reply = reply, error = error,
             diagnostics = diagnostics, micActive = recordingNow(), noticePose = noticePose, active = _phase.isActive,
+            cuePlaying = cuePlaying && _phase == VoicePhase.PREPARING,
         )
         if (snap == lastSnapshot) return
         lastSnapshot = snap

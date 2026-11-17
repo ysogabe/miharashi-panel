@@ -49,7 +49,7 @@ class DaidaiVoiceSessionTest {
         val voice = DaidaiVoice(
             pages, policy, { settings },
             VoiceRuntimeFactory { _, listener ->
-                Runtime(VoiceSession(audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0"), audio)
+                Runtime(VoiceSession(audio, bridge, CueRejectingPlayer(player), sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0"), audio)
                     .also { runtimes += it }
             },
             sim, { rendered += it }, StartSound { tones++ }, { sim.now }, { GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT) },
@@ -269,7 +269,7 @@ class DaidaiVoiceSessionTest {
         val voice = DaidaiVoice(
             pages, controller.policy, { configured },
             VoiceRuntimeFactory { _, listener ->
-                val session = VoiceSession(audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0")
+                val session = VoiceSession(audio, bridge, CueRejectingPlayer(player), sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0")
                 object : VoiceRuntime {
                     override fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) {
                         starts += reason

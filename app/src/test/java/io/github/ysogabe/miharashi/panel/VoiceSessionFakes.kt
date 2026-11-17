@@ -336,11 +336,17 @@ class FakePlayer(private val log: MutableList<String>) : ReplyPlayer {
     private var onDone: ((Boolean) -> Unit)? = null
     val playing: Boolean get() = onDone != null
 
+    /** 渡された `onDone` をすべて(遅れて届く完了の通知の再現に使う) */
+    val dones = mutableListOf<(Boolean) -> Unit>()
+    val wavs = mutableListOf<ByteArray>()
+
     override fun play(wav: ByteArray, onDone: (Boolean) -> Unit) {
         log += "player.play"
         throwOnPlay?.let { throw it }
         plays++
         lastWav = wav
+        wavs += wav
+        dones += onDone
         this.onDone = onDone
     }
 
@@ -398,6 +404,24 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
         if (throwOnMicOpened) throw IllegalStateException("tone failed: secret-listener-message")
     }
 
+    /** [onMicOpened] の合図の段の結果(段 G)。開いた順 */
+    val micCues = mutableListOf<MicCue>()
+
+    /** [onCueStarted] で受け取った挨拶の選択(チャイムから始めたら null)。呼ばれた順 */
+    val cueStarts = mutableListOf<CueChoice?>()
+    val cueStartedAt = mutableListOf<Long>()
+
+    override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag, cue: MicCue) {
+        micCues += cue
+        onMicOpened(autoStarted, follow, tag)
+    }
+
+    override fun onCueStarted(autoStarted: Boolean, tag: TurnTag, greeting: CueChoice?) {
+        log += "cueStarted"
+        cueStarts += greeting
+        cueStartedAt += sim.now
+    }
+
     override fun onEnded(autoStarted: Boolean, reason: String, outcome: TurnOutcome, tag: TurnTag) {
         log += "ended:$reason"
         ended += autoStarted to reason
@@ -408,7 +432,12 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
 }
 
 /** セッション・フェイク一式と、テストを読みやすくする操作 */
-class Rig(guardMs: Long = VoiceLimits.START_TONE_GUARD_MS, sessionMaxMs: Long = VoiceLimits.SESSION_MAX_MS) {
+class Rig(
+    guardMs: Long = VoiceLimits.START_TONE_GUARD_MS,
+    sessionMaxMs: Long = VoiceLimits.SESSION_MAX_MS,
+    cueGuardMs: Long = VoiceLimits.CUE_GUARD_MS,
+    cueEchoWaitMs: Long = VoiceLimits.CUE_ECHO_WAIT_MS,
+) {
     val log = mutableListOf<String>()
     val sim = Sim()
     val bridge = FakeBridge(sim, log)
@@ -418,7 +447,7 @@ class Rig(guardMs: Long = VoiceLimits.START_TONE_GUARD_MS, sessionMaxMs: Long = 
     val listener = RecordingListener(sim, log)
     val session = VoiceSession(
         audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0",
-        startToneGuardMs = guardMs, sessionMaxMs = sessionMaxMs,
+        startToneGuardMs = guardMs, sessionMaxMs = sessionMaxMs, cueGuardMs = cueGuardMs, cueEchoWaitMs = cueEchoWaitMs,
     )
 
     /** チャンクの応答の `state`(既定の [FakeBridge.chunkReply] が使う) */
@@ -494,5 +523,35 @@ class Rig(guardMs: Long = VoiceLimits.START_TONE_GUARD_MS, sessionMaxMs: Long = 
     fun startAndListen(reason: StartReason = StartReason.SWIPE, notice: String? = null, auto: Boolean = false) {
         start(reason, notice, auto)
         check(phase == VoicePhase.LISTENING) { "phase=$phase" }
+    }
+}
+
+/**
+ * 段 G より前に書いた結線の試験(DaidaiVoice + 本物の VoiceSession)を、「挨拶もチャイムも鳴らせない」最後の手段の経路で動かすための包み。
+ * チャイム([StartChime] と同じ中身)の再生だけを直ちに失敗させ(内側には渡さない)、その失敗のあとの 1 回の `stop` も内側に渡さない。
+ * これで、作成の直後にマイクを開き、開始音(ビープ)と 400 ms の破棄、という今までの順序がそのまま再現される。返答の再生はすべて内側へ。
+ * 合図を鳴らしきる経路は `VoiceSessionCueTest` と `DaidaiVoiceSessionTest` の段 G の試験が見る。
+ */
+class CueRejectingPlayer(private val inner: ReplyPlayer) : ReplyPlayer {
+    private val chime = StartChime.wav()
+    private var swallowNextStop = false
+    var rejected = 0
+
+    override fun play(wav: ByteArray, onDone: (Boolean) -> Unit) {
+        if (wav.contentEquals(chime)) {
+            rejected++
+            swallowNextStop = true
+            onDone(false)
+            return
+        }
+        inner.play(wav, onDone)
+    }
+
+    override fun stop() {
+        if (swallowNextStop) {
+            swallowNextStop = false
+            return
+        }
+        inner.stop()
     }
 }
