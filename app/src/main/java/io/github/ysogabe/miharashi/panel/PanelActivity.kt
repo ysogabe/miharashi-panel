@@ -127,6 +127,8 @@ class PanelActivity : Activity() {
             testVoiceRuntimeFactory ?: VoiceRuntimeFactory { s, l -> AndroidVoiceRuntime(applicationContext, s, l) },
             HandlerScheduler(main), daidaiView::render, testStartSound ?: ToneStartSound(), SystemClock::elapsedRealtime,
             presence = { now -> daidai.presenceGate.evaluate(now) }, // 続きの往復ごとに毎回見る(S2-U9)
+            // 挨拶の音声(段 G)。ブリッジと同じ接続先・トークンで取り、メモリにだけ持つ
+            cueFactory = testCueFactory ?: CueSourceFactory { s -> CueStore.create(s, SystemClock::elapsedRealtime) },
         )
         daidai.entryListener = voice
         daidaiView.onErrorTap = voice::onErrorTapped // 再試行は利用者のタップだけ
@@ -272,6 +274,7 @@ class PanelActivity : Activity() {
         /** 試験用の差し込み口(本番では null)。Intent からは触れない。セッション一式とスピーカーを偽物にする */
         internal var testVoiceRuntimeFactory: VoiceRuntimeFactory? = null
         internal var testStartSound: StartSound? = null
+        internal var testCueFactory: CueSourceFactory? = null
     }
 
     /** immersive sticky: バーを隠し、端からのスワイプで一時的にだけ出す */

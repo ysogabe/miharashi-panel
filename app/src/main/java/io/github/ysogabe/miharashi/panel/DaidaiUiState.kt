@@ -67,9 +67,11 @@ data class DaidaiUiState(
     val micActive: Boolean = false,
     /** 設定が足りないときの案内 */
     val setup: SetupGuide = SetupGuide.NONE,
+    /** 開始の合図(挨拶・チャイム)を鳴らしている(段 G)。アバターを talking にする。マイクはまだ閉じている(`micActive` は false のまま) */
+    val cuePlaying: Boolean = false,
 ) {
-    /** アバターのポーズ(§5.5 の対応。通知のポーズは待機中のカード表示のときだけ使う) */
-    val avatarPose: String get() = DaidaiText.pose(voice, noticePose, notice != null)
+    /** アバターのポーズ(§5.5 の対応。通知のポーズは待機中のカード表示のときだけ使う。合図の再生中は talking) */
+    val avatarPose: String get() = if (cuePlaying) DaidaiPose.TALKING else DaidaiText.pose(voice, noticePose, notice != null)
 
     /** 画面全体に出す案内。権限なしのエラーは、`setup` が空でも権限の案内にする */
     val guide: SetupGuide

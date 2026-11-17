@@ -64,6 +64,32 @@ object VoiceLimits {
      */
     const val START_TONE_GUARD_MS = 400L
 
+    // ---- 開始の合図(段 G。設計書(段階 2)§5.8)
+
+    /** 挨拶(かチャイム)を鳴らし終えたあと、マイクを開いた直後に捨てる録音の長さ(残響の尾とマイクの立ち上がり)。ビープが無いので 400 ms は要らない */
+    const val CUE_GUARD_MS = 200L
+
+    /** 挨拶の再生の完了からマイクを開くまでの残響の待ち(続きの往復の [DaidaiVoice.ECHO_WAIT_MS] と同じ値) */
+    const val CUE_ECHO_WAIT_MS = 300L
+
+    /** 挨拶の再生の期限 = 実データの長さ + この値。過ぎたら止めてチャイムへ */
+    const val CUE_PLAYBACK_MARGIN_MS = 1_500L
+
+    /** 挨拶 1 本の長さの上限(ホストの `idle_expire_s` 15 秒に収める) */
+    const val CUE_MAX_MS = 5_000L
+
+    /** 挨拶 1 本の WAV の大きさの上限(48 kHz・5 秒で約 480 KB) */
+    const val CUE_MAX_BYTES = 1024 * 1024
+
+    /** 挨拶の目録(JSON)の大きさの上限。今の目録は約 2.2 KB(`\u` の書き方でも) */
+    const val CUE_MANIFEST_MAX_BYTES = 16 * 1024
+
+    /** 挨拶の取り直しの間隔(取得に成功したあと)。失敗したあとは次の入場の前に取り直す */
+    const val CUE_REFRESH_MS = 30 * 60_000L
+
+    /** 挨拶の取得 1 回(目録か WAV 1 本)の全体の期限 */
+    const val CUE_FETCH_TIMEOUT_MS = 10_000L
+
     // ---- ホスト値の既定と Panel の上限(秒)
     const val NO_SPEECH_DEFAULT_S = 10L
     const val NO_SPEECH_MAX_S = 10L

@@ -62,7 +62,8 @@ class BridgeClient(
     private val replyAudioTimeoutMs: Long = VoiceLimits.REPLY_AUDIO_FETCH_TIMEOUT_MS + DEADLINE_MARGIN_MS,
     private val cancelTimeoutMs: Long = CANCEL_TIMEOUT_MS,
     private val eventsReadTimeoutMs: Int = EVENTS_READ_TIMEOUT_MS,
-) : BridgeApi {
+    private val cueTimeoutMs: Long = VoiceLimits.CUE_FETCH_TIMEOUT_MS,
+) : BridgeApi, CueFetcher {
     private val base = baseUrl.trim()
     private val bearer = token.trim()
     private val configured = base.isNotEmpty() && bearer.isNotEmpty() && Settings.validateDaidaiUrl(base) == null
@@ -343,6 +344,58 @@ class BridgeClient(
     }
 
     // =========================================================================================
+    // 挨拶の音声(段 G。設計書(段階 2)§5.8.3。ホストの契約は local-model-lab の docs/panel-greeting-cues.md)
+
+    /**
+     * `GET /v1/voice/cues`。本文は [VoiceLimits.CUE_MANIFEST_MAX_BYTES] まで。使うのは各項目の `sha256`(小文字の 16 進 64 文字)と `ms`
+     * (1〜5000 の整数)だけで、名前が `^[a-z][a-z0-9_]{0,31}$` に合わない項目・形の違う項目は捨てる(`text` などほかの項目は読まない)。
+     * 中断([abortInFlight])の対象にしない接続で、セッションの通信と独立に送る。404 は `NOT_FOUND`(挨拶が無い)。
+     */
+    override fun fetchCueManifest(): CueManifest =
+        exchange(
+            "GET", "/v1/voice/cues", ACCEPT_JSON, abortable = false, totalMs = cueTimeoutMs, readTimeoutMs = readMs(cueTimeoutMs),
+        ) { c ->
+            val code = c.responseCode
+            if (code != 200) failStatus(c, code, forChunk = false)
+            if (!hasMediaType(c.contentType, ACCEPT_JSON)) fail(BridgeFailure.MALFORMED, code)
+            val o = readJson(c, code, VoiceLimits.CUE_MANIFEST_MAX_BYTES)
+            val cues = o.opt("cues") as? JSONObject ?: fail(BridgeFailure.MALFORMED, code)
+            val out = HashMap<String, CueEntry>()
+            for (name in cues.keys()) {
+                if (!CUE_NAME_REGEX.matches(name)) continue
+                val e = cues.opt(name) as? JSONObject ?: continue
+                val sha = (e.opt("sha256") as? String)?.takeIf { SHA256_REGEX.matches(it) } ?: continue
+                val ms = e.longOrNull("ms")?.takeIf { it in 1..VoiceLimits.CUE_MAX_MS } ?: continue
+                out[name] = CueEntry(sha, ms)
+            }
+            val voice = (o.opt("voice") as? String)?.takeIf { it.length <= MAX_CUE_VOICE_CHARS }
+            CueManifest(voice, out)
+        }
+
+    /**
+     * `GET /v1/voice/cues/{name}`。`name` は [StartCue.NAMES] のどれかだけ(パスに入るのは Panel が持つ固定の名前。目録の鍵は入れない)。
+     * `audio/wav` で、[VoiceLimits.CUE_MAX_BYTES] まで、[WavValidator] を通ったものだけ返す。中断の対象にしない接続。
+     */
+    override fun fetchCue(name: String): ByteArray {
+        if (name !in StartCue.NAMES) throw BridgeException(BridgeFailure.MALFORMED)
+        return exchange(
+            "GET", "/v1/voice/cues/$name", ACCEPT_WAV, abortable = false, totalMs = cueTimeoutMs, readTimeoutMs = readMs(cueTimeoutMs),
+        ) { c ->
+            val code = c.responseCode
+            if (code != 200) failStatus(c, code, forChunk = false)
+            if (WAV_TYPES.none { hasMediaType(c.contentType, it) }) fail(BridgeFailure.MALFORMED, code)
+            if (c.contentLengthLong > VoiceLimits.CUE_MAX_BYTES) fail(BridgeFailure.MALFORMED, code)
+            val bytes = BridgeHttp.readBounded(c.inputStream, VoiceLimits.CUE_MAX_BYTES) ?: fail(BridgeFailure.MALFORMED, code)
+            try {
+                WavValidator.validate(bytes)
+            } catch (_: WavFormatException) {
+                fail(BridgeFailure.MALFORMED, code)
+            }
+            bytes
+        }
+    }
+
+    // =========================================================================================
     // 共通
 
     /** 内側(期限のウォッチドッグの中)で投げる失敗。[BridgeHttp.withDeadline] は [RuntimeException] を期限の判定に使うので、これで包む。 */
@@ -484,9 +537,9 @@ class BridgeClient(
     }
 
     /** 成功応答の JSON 本文(4 KB まで)。超過・JSON でない・オブジェクトでないときは `MALFORMED`。 */
-    private fun readJson(c: HttpURLConnection, code: Int): JSONObject {
-        if (c.contentLengthLong > BridgeHttp.MAX_BODY_BYTES) fail(BridgeFailure.MALFORMED, code)
-        val bytes = BridgeHttp.readBounded(c.inputStream, BridgeHttp.MAX_BODY_BYTES) ?: fail(BridgeFailure.MALFORMED, code)
+    private fun readJson(c: HttpURLConnection, code: Int, limit: Int = BridgeHttp.MAX_BODY_BYTES): JSONObject {
+        if (c.contentLengthLong > limit) fail(BridgeFailure.MALFORMED, code)
+        val bytes = BridgeHttp.readBounded(c.inputStream, limit) ?: fail(BridgeFailure.MALFORMED, code)
         return try {
             JSONObject(String(bytes, Charsets.UTF_8))
         } catch (_: Exception) {
@@ -530,5 +583,8 @@ class BridgeClient(
         private val EVENT_NAMES = setOf("state", "transcript", "reply", "error", "done")
         private const val MAX_EVENT_CODE_CHARS = 64
         private const val MAX_AUDIO_FORMAT_CHARS = 16
+        private const val MAX_CUE_VOICE_CHARS = 64
+        private val CUE_NAME_REGEX = Regex("^[a-z][a-z0-9_]{0,31}$")
+        private val SHA256_REGEX = Regex("^[0-9a-f]{64}$")
     }
 }
