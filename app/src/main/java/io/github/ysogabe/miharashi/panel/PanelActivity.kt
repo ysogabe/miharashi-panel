@@ -126,6 +126,7 @@ class PanelActivity : Activity() {
             pages, daidai.policy, { settings.daidai },
             testVoiceRuntimeFactory ?: VoiceRuntimeFactory { s, l -> AndroidVoiceRuntime(applicationContext, s, l) },
             HandlerScheduler(main), daidaiView::render, testStartSound ?: ToneStartSound(), SystemClock::elapsedRealtime,
+            presence = { now -> daidai.presenceGate.evaluate(now) }, // 続きの往復ごとに毎回見る(S2-U9)
         )
         daidai.entryListener = voice
         daidaiView.onErrorTap = voice::onErrorTapped // 再試行は利用者のタップだけ

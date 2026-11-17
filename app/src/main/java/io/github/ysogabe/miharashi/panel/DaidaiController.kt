@@ -70,6 +70,9 @@ class DaidaiController(
     private val gate = AmbientLightGate(sample = { LuxSample(lux) }, config = { GateConfig.from(settings()) })
     val policy = AutoSwitchPolicy(gate)
 
+    /** 在席ゲート(通知の自動切替と同じもの)。会話の続きの往復ごとに、`DaidaiVoice` が毎回呼ぶ(段階 2a-P、S2-U9) */
+    val presenceGate: PresenceGate get() = gate
+
     private var started = false
     private var endpoint: Any? = null
     private var lastStatus: KioskStatus? = null

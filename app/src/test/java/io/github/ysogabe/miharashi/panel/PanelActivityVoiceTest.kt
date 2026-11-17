@@ -26,6 +26,13 @@ private class ActivityRuntime(val settings: DaidaiSettings, val listener: VoiceS
     var closed = false
     override fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) { calls += "start:${reason.wire}:$autoStarted" }
     override fun retry() { calls += "retry" }
+    /** [DaidaiVoice] は往復の要求で始める(段階 2a-P)。旧い呼び方と同じ文字列でも記録し、既存の試験をそのまま通す */
+    val turnStarts = mutableListOf<TurnRequest>()
+    val turnRetries = mutableListOf<TurnRequest>()
+    val conversationEnds = mutableListOf<String>()
+    override fun start(request: TurnRequest) { calls += "start:${request.reason.wire}:${request.autoStarted}"; turnStarts += request }
+    override fun retry(request: TurnRequest) { calls += "retry"; turnRetries += request }
+    override fun endConversation(handle: String) { calls += "endConversation"; conversationEnds += handle }
     override fun cancel() { calls += "cancel" }
     override fun stopMicNow() { calls += "stopMic" }
     override fun close() { closed = true; calls += "close" }
@@ -202,6 +209,8 @@ class PanelActivityVoiceTest {
             idle(30_000)
             assertEquals("セッション進行中は A に戻らない", 1f, f.pager.position, 0f)
             rt.listener.onSnapshot(VoiceSnapshot(state = VoiceState.IDLE, micActive = false, active = false))
+            // 往復の終わり(続けない結果)で会話が終わる。会話が続いている間は無操作タイマーも止まる(段階 2a-P)
+            rt.listener.onEnded(false, "no_speech", TurnOutcome.ERROR, rt.turnStarts.last().tag)
             idle(50)
             assertFalse(f.daidai.uiState.micActive)
             idle(15_000)

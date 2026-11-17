@@ -64,8 +64,12 @@ class LateCreateAfterCloseTest {
     private class LocalBridge : BridgeApi {
         val creates = mutableListOf<SessionRequest>()
         val cancels = mutableListOf<String>()
-        override fun createSession(req: SessionRequest): SessionInfo {
+
+        /** 作成の要求を送った直後(応答が戻る前)に走らせる処理。「通信中に close が来る」並びの再現 */
+        var duringCreate: (() -> Unit)? = null
+        override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
             creates += req
+            duringCreate?.invoke()
             return SessionInfo("s-${creates.size}")
         }
 
@@ -73,6 +77,7 @@ class LateCreateAfterCloseTest {
         override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
         override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)
         override fun cancel(id: String) { cancels += id }
+        override fun endConversation(handle: String) {}
         override fun abortInFlight() {} // 中断が間に合わなかった(作成は成功して戻る)
     }
 
@@ -94,7 +99,7 @@ class LateCreateAfterCloseTest {
             if (!closed.compareAndSet(false, true)) return
             session.cancel()
             session.stopMicNow()
-            if (wrap) bridge.close().forEach { runCatching { bridge.cancel(it) } } // AndroidVoiceRuntime.close: 未取消の ID を回収して DELETE
+            if (wrap) bridge.close().sessionIds.forEach { runCatching { bridge.cancel(it) } } // AndroidVoiceRuntime.close: 未取消の ID を回収して DELETE
             gated.post { gated.terminated = true } // executor.shutdown(); thread.quitSafely()
         }
     }
@@ -102,13 +107,17 @@ class LateCreateAfterCloseTest {
     @Test fun aCreateThatSucceedsAfterTheRuntimeIsClosedIsDeletedByTheWorkerEvenThoughTheDeliveryIsDropped() {
         val r = Rig(wrap = true)
         r.session.start(StartReason.SWIPE, null, false)
-        r.sim.settle() // doStart: 作成の通信が走り始める(まだ戻らない)
+        r.sim.settle() // doStart: 作成の呼び出しをワーカーに積む(まだ実行しない)
         assertEquals(VoicePhase.PREPARING, r.session.phase)
-        r.close()
-        r.sim.settle() // doCancel と、ループの終了
-        assertTrue(r.gated.terminated)
+        // 作成の要求を送ったあと、応答が戻る前に close が完了する(作成の直前の許可の照合は、close より先に通っている)
+        r.local.duringCreate = {
+            r.close()
+            r.sim.settle() // doCancel と、ループの終了
+            assertTrue(r.gated.terminated)
+        }
         r.worker.runPending() // 遅れて作成が成功して戻る → 配送は捨てられる
         r.sim.settle()
+        assertEquals("作成の要求は送られた", 1, r.local.creates.size)
         assertEquals("配送は捨てられた", 1, r.gated.dropped)
         assertEquals("通信のスレッドで、その場で DELETE", listOf("s-1"), r.local.cancels)
         assertEquals("マイクは開かない", 0, r.audio.startCount)
@@ -131,14 +140,20 @@ class LateCreateAfterCloseTest {
     }
 
     @Test fun withoutTheWrapperTheLateCreateIsNeverDeleted() {
-        // 対照: 包みがないと、ループの終了後に成功した作成は DELETE されない(ホストにセッションが残る)
+        // 対照: 包みがないと、ループの終了後に成功した作成は DELETE されない(ホストにセッションが残る)。
+        // 主の試験と同じく、作成の要求を送ったあと(duringCreate)で close する。close のあとにワーカーを動かすと、
+        // 作成の取消の照合で作成自体が止まり、「DELETE されない」が空振りになる
         val r = Rig(wrap = false)
         r.session.start(StartReason.SWIPE, null, false)
         r.sim.settle()
-        r.close()
-        r.sim.settle()
+        r.local.duringCreate = {
+            r.close()
+            r.sim.settle()
+            assertTrue(r.gated.terminated)
+        }
         r.worker.runPending()
         r.sim.settle()
+        assertEquals("作成の要求は実際に送られた(空振りではない)", 1, r.local.creates.size)
         assertEquals(1, r.gated.dropped)
         assertTrue("包みがなければ消えない(この試験が差を検出できることの確認)", r.local.cancels.isEmpty())
     }

@@ -126,17 +126,28 @@ interface VoiceSessionListener {
      *
      * `autoStarted`: **マイクを開いたそのセッション**の起点(通知の自動切替なら true)。呼び出し側が可変の状態を後から読まずに済むよう、
      * 通知の時点の値を渡す([onEnded] の `autoStarted` と同じ値)。
+     * `follow` / `tag`: そのセッションの [TurnRequest.follow] / [TurnRequest.tag](続きの開始音と歯止めの判断に使う。同じく通知の時点の値)。
      */
-    fun onMicOpened(autoStarted: Boolean)
+    fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag)
+
+    /**
+     * 作成が成功して、201 に `conversation` があった(現在の世代の作成だけ。**`startSse` / マイクを開くより前**に、セッションのスレッドで 1 回)。
+     * ハンドルの持ち主は呼び出し側で、[VoiceSession] は覚えない。マイクを開く前に取消された場合も、この通知は出ている。例外は握りつぶされる。
+     * 古い世代の作成([VoiceSession] が `DELETE` と会話の終わりを送る)では呼ばれない。`info` の `toString` はハンドルを含めない。
+     */
+    fun onConversation(tag: TurnTag, info: ConversationInfo) {}
 
     /**
      * セッションが終わった(DONE・ERROR・取消のどれか)ときに**セッションごとに 1 回だけ**。ERROR から IDLE へ戻るときは呼ばない。
      * `reason`: DONE は "done"、取消は "cancelled"、ERROR はエラーコードの文字列(例 "no_speech"。`AutoSwitchPolicy.REASON_NO_SPEECH` と一致)。
      * ホストの未知のコードは `host_` + `[a-z0-9_]` だけに整えた文字列(本物のコードと衝突しない。例 "host_weird_code"、整えると空なら "host_unknown")。
      * 返答音声の失敗(`audio: null` に `audio_error` が付いた場合を含む)で DONE になるときは "reply_audio_failed"。
+     * 続きの往復([TurnRequest.follow])の無発話は、ERROR を表示せず取消と同じ IDLE に終え、`reason` は "no_speech"、`outcome` は [TurnOutcome.ERROR]。
+     *
+     * `outcome`: 往復の結果(設計書(段階 2)§5.2。理由の文字列からは決めず、終わった経路から決める)。`tag`: [TurnRequest.tag]。
      *
      * 録音中(マイクを開いている間)にこのリスナーの [onMicOpened]・[onSnapshot] が例外を投げると、セッションは録音を続けず
      * `mic_unavailable` で終わる。終了処理中の通知の例外は無視される。
      */
-    fun onEnded(autoStarted: Boolean, reason: String)
+    fun onEnded(autoStarted: Boolean, reason: String, outcome: TurnOutcome, tag: TurnTag)
 }

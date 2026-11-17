@@ -65,6 +65,7 @@ object AutoSwitchDiagnostics {
     private fun denialText(d: MicDenial) = when (d) {
         MicDenial.AUTO_LISTEN_OFF -> "自動で聞く設定がオフ"
         MicDenial.AFTER_NO_SPEECH -> "直前の自動起動で無発話"
+        MicDenial.AFTER_CONVERSATION_LIMIT -> "直前の自動起動の会話が上限で終了"
         MicDenial.COOLDOWN -> "クールダウン中"
         MicDenial.HOURLY_LIMIT -> "1 時間の上限"
     }

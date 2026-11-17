@@ -88,6 +88,10 @@ class FakeBridge(private val sim: Sim, private val log: MutableList<String>) : B
     val created = mutableListOf<SessionRequest>()
     val chunks = mutableListOf<SentChunk>()
     val cancels = mutableListOf<String>()
+
+    /** `endConversation` に渡されたハンドル(呼ばれた順) */
+    val conversationEnds = mutableListOf<String>()
+    var endConversationReply: Resp<Unit> = ok(Unit)
     val eventOpens = mutableListOf<Int?>()
     val fetches = mutableListOf<Int>()
     var aborts = 0
@@ -125,7 +129,13 @@ class FakeBridge(private val sim: Sim, private val log: MutableList<String>) : B
         s.forEach { worker.complete(it.pending, result) }
     }
 
-    override fun createSession(req: SessionRequest): SessionInfo {
+    /** 通信の層が取消の照合([isCurrent])を見る直前に走らせる処理。「VoiceSession の照合を通ったあと、通信の層が見る前に取消が完了する」並びの再現 */
+    var beforeCurrentCheck: (() -> Unit)? = null
+
+    override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
+        // 本物の通信の層と同じ契約: 作成の要求を送る(= 記録する)前に照合し、false なら送らずに取消で投げる
+        beforeCurrentCheck?.invoke()
+        if (!isCurrent()) throw CreateCancelledException()
         log += "create"
         created += req
         hostLog.clear() // ホストのイベントの記録はセッションごと
@@ -171,6 +181,13 @@ class FakeBridge(private val sim: Sim, private val log: MutableList<String>) : B
         cancelReply.result()
     }
 
+    override fun endConversation(handle: String) {
+        log += "endConversation"
+        conversationEnds += handle
+        info = FakeWorker.CallInfo(endConversationReply.latencyMs, abortable = false)
+        endConversationReply.result()
+    }
+
     override fun abortInFlight() {
         log += "abort"
         aborts++
@@ -196,8 +213,26 @@ class FakeWorker(private val sim: Sim, private val bridge: FakeBridge) : Session
     /** 応答なし(遅延 null)で止まっている呼び出しの数 */
     val heldCount: Int get() = inflight.count { it.timer == null }
 
-    @Suppress("UNCHECKED_CAST")
+    /** true の間、`run` は呼び出しを実行せずに積む([runHeld] で 1 つずつ実行する。ワーカースレッドの実行の遅れの再現) */
+    var holdCalls = false
+    private val held = ArrayDeque<() -> Unit>()
+
+    /** 積まれたまま未実行の呼び出しの数 */
+    val heldCallCount: Int get() = held.size
+
+    /** 積まれた呼び出しを古い順に 1 つ実行する(実行したら true) */
+    fun runHeld(): Boolean {
+        val task = held.removeFirstOrNull() ?: return false
+        task()
+        return true
+    }
+
     override fun <T> run(call: () -> T, deliver: (Result<T>) -> Unit) {
+        if (holdCalls) held.addLast { execute(call, deliver) } else execute(call, deliver)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> execute(call: () -> T, deliver: (Result<T>) -> Unit) {
         val p = Pending(deliver as (Result<Any?>) -> Unit)
         bridge.currentPending = p
         bridge.info = CallInfo(0L, true)
@@ -327,7 +362,15 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
     val snaps = mutableListOf<VoiceSnapshot>()
     val micOpenedAt = mutableListOf<Long>()
     val micOpenedAuto = mutableListOf<Boolean>()
+    val micOpenedFollow = mutableListOf<Boolean>()
+    val micOpenedTags = mutableListOf<TurnTag>()
     val ended = mutableListOf<Pair<Boolean, String>>()
+    val outcomes = mutableListOf<TurnOutcome>()
+    val endedTags = mutableListOf<TurnTag>()
+
+    /** [onConversation] で受け取った(タグ, 情報)。順序つき */
+    val conversations = mutableListOf<Pair<TurnTag, ConversationInfo>>()
+    var throwOnConversation = false
 
     /** true を返したスナップショットでは、記録したあとに例外を投げる(リスナーの失敗の再現) */
     var throwOnSnapshot: ((VoiceSnapshot) -> Boolean)? = null
@@ -340,16 +383,26 @@ class RecordingListener(private val sim: Sim, private val log: MutableList<Strin
         if (throwOnSnapshot?.invoke(snapshot) == true) throw IllegalStateException("snapshot failed: ${snapshot.state}")
     }
 
-    override fun onMicOpened(autoStarted: Boolean) {
+    override fun onConversation(tag: TurnTag, info: ConversationInfo) {
+        log += "conversation"
+        conversations += tag to info
+        if (throwOnConversation) throw IllegalStateException("conversation failed")
+    }
+
+    override fun onMicOpened(autoStarted: Boolean, follow: Boolean, tag: TurnTag) {
         log += "micOpened"
         micOpenedAt += sim.now
         micOpenedAuto += autoStarted
+        micOpenedFollow += follow
+        micOpenedTags += tag
         if (throwOnMicOpened) throw IllegalStateException("tone failed: secret-listener-message")
     }
 
-    override fun onEnded(autoStarted: Boolean, reason: String) {
+    override fun onEnded(autoStarted: Boolean, reason: String, outcome: TurnOutcome, tag: TurnTag) {
         log += "ended:$reason"
         ended += autoStarted to reason
+        outcomes += outcome
+        endedTags += tag
         if (throwOnEnded) throw IllegalStateException("ended failed")
     }
 }
@@ -385,6 +438,12 @@ class Rig(guardMs: Long = VoiceLimits.START_TONE_GUARD_MS, sessionMaxMs: Long = 
 
     fun cancel() {
         session.cancel()
+        sim.settle()
+    }
+
+    /** 往復の要求で始める([start] の [TurnRequest] 版) */
+    fun startTurn(request: TurnRequest) {
+        session.start(request)
         sim.settle()
     }
 

@@ -16,14 +16,24 @@ data class SessionRequest(
     val noSpeechS: Long = VoiceLimits.NO_SPEECH_DEFAULT_S,
     /** 同 `limits.max_utterance_s` */
     val maxUtteranceS: Long = VoiceLimits.MAX_UTTERANCE_DEFAULT_S,
+    /**
+     * 会話(段階 2a-P。設計書(段階 2)§6.1)。null なら本文に `conversation` を**書かない**(旧 Panel とバイト単位で同じ)。
+     * `toString` に含まれる [ConversationParam] はハンドルを出さない。
+     */
+    val conversation: ConversationParam? = null,
 )
 
 /**
  * 作成の応答(`201`)。`sessionId` はホストの文字列そのまま(形式の検証は [VoiceSession] が `^[A-Za-z0-9_-]{1,64}$` で行い、
- * 外れたら作成の失敗にする)。`toString` はセッション id を含めない。
+ * 外れたら作成の失敗にする)。`conversation` は応答に辞書の `conversation` があるときだけ(旧ホストは null)。
+ * `toString` はセッション id もハンドルも含めない。
  */
-data class SessionInfo(val sessionId: String, val limits: HostLimits = HostLimits()) {
-    override fun toString() = "SessionInfo(idLen=${sessionId.length}, limits=$limits)"
+data class SessionInfo(
+    val sessionId: String,
+    val limits: HostLimits = HostLimits(),
+    val conversation: ConversationInfo? = null,
+) {
+    override fun toString() = "SessionInfo(idLen=${sessionId.length}, limits=$limits, conversation=$conversation)"
 }
 
 /** チャンクの応答の `state`。 */
@@ -122,12 +132,21 @@ class BridgeException(
 }
 
 /**
+ * 作成の呼び出しが、**作成の要求をホストへ送る前に**取り消されたことを表す([BridgeApi.createSession] の `isCurrent` が false を返した)。
+ * 通信の失敗ではない([BridgeException] にしない)。[VoiceSession] はエラーを表示せず、同じ世代なら取消として終え、古い世代なら黙って捨てる。
+ * メッセージ・原因にハンドルや本文を入れない(スタックも持たない)。
+ */
+class CreateCancelledException : RuntimeException("create cancelled", null, false, false)
+
+/**
  * ブリッジとの通信(設計書 §5.4)。**すべてブロッキング**で、[VoiceSession] のワーカー([SessionWorker])から呼ばれる。
  * 同時に複数のスレッドから呼ばれうる(SSE の `events` は 1 セッションの間ずっと 1 本占有し、その間に `sendAudio` も走る)。
  *
  * T7 が守ること:
  * - 失敗は [BridgeException] で投げる(通信失敗・タイムアウト・中断 = `NETWORK`)。それ以外の例外も VoiceSession は通信失敗として扱う。
  * - `createSession` は応答の `session_id` を**検証せず**そのまま返してよい(VoiceSession が検証し、不正なら作成の失敗にする)。
+ *   `isCurrent` は「この作成をまだ送ってよいか」の照合(取消が来ると false。**ブロックせず・速く**返す純粋な読み取り)。実装は作成の要求を送る前に見て、
+ *   false なら送らず [CreateCancelledException] で投げる。`isCurrent` を持たない `createSession(req)` は常に true と同じ。
  * - `sendAudio`: 本文は生の PCM。`final` のときだけ `X-Chunk-Final: 1`。本文は 640〜16,000 バイト(最終チャンクも同じ長さに収めてくる)。
  *   `200` の応答の `state` が未知なら `MALFORMED`。`409` は本文の `error.code` で `ENDED` / `OUT_OF_ORDER` / `SEQ_CONFLICT` に分ける。
  * - `events`: **ブロッキング**。購読が終わる(EOF・切断・`abortInFlight`)まで戻らない。[BridgeEvent] を seq の順に `onEvent` へ渡す(別スレッドで呼んでよい)。
@@ -135,6 +154,7 @@ class BridgeException(
  * - `fetchReplyAudio`: `index` は整数。検証済みの WAV を返す。10 MB・120 秒を超えるものは読みながら打ち切って `MALFORMED`。
  * - `cancel`: `DELETE`。`204` / `404` を成功とする。**`abortInFlight` で中断してはいけない**(停止の順序は abort → cancel なので、
  *   `cancel` は abort の後に始まるが、次のセッションの abort で潰れないよう、cancel 専用の接続は abort の対象外にする)。
+ * - `endConversation`: `POST`。`cancel` と同じ流儀で、`abort` の対象外。ハンドルは URL にも例外のメッセージにも出さない。
  * - `abortInFlight`: 今通信中の接続を**すべて**(SSE を含む)切り、ブロック中の呼び出しを例外で戻らせる。ノンブロッキングで、どのスレッドからも呼べる。
  *   VoiceSession は 4 秒のチャンクのウォッチドッグでもこれを使うので、その副作用で SSE が切れる場合がある(VoiceSession は
  *   再接続の回数に数えずに張り直す)。
@@ -142,10 +162,26 @@ class BridgeException(
  * - トークン・音声・認識テキストをログ・例外メッセージに出さない。
  */
 interface BridgeApi {
-    fun createSession(req: SessionRequest): SessionInfo
+    fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo
+
     fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean): ChunkAck
     fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit)
     fun fetchReplyAudio(id: String, index: Int): ByteArray
     fun cancel(id: String)
+
+    /**
+     * 会話の終わりを伝える(`POST /v1/voice/conversations/end`、本文 `{"handle":"…"}`。段階 2a-P)。**ハンドルを URL に入れない**。
+     * 送る前に [VoiceLimits.CONVERSATION_HANDLE_REGEX] で検証し、外れたら送らずに [IllegalArgumentException](メッセージにハンドルを入れない)。
+     * [cancel] と同じく中断([abortInFlight])の対象にしない接続で、短い期限で送る。`204`(と旧ホストの `404`)を成功とする。
+     * 呼ぶ側は結果を無視する(最良努力)。
+     */
+    fun endConversation(handle: String)
+
     fun abortInFlight()
 }
+
+/**
+ * 取消の照合を持たない作成(常に「まだ送ってよい」)。メンバーではなく拡張にしているのは、`BridgeApi by inner` の包みが
+ * インターフェースの既定メソッドを内側へ直接委譲して、包みの `createSession(req, isCurrent)` を飛ばすのを防ぐため。
+ */
+fun BridgeApi.createSession(req: SessionRequest): SessionInfo = createSession(req) { true }

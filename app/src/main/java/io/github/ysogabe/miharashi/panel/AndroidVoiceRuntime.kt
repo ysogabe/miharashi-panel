@@ -61,6 +61,31 @@ class AndroidVoiceRuntime(
         session.retry()
     }
 
+    override fun start(request: TurnRequest) {
+        if (closed.get()) return
+        session.start(request)
+    }
+
+    override fun retry(request: TurnRequest) {
+        if (closed.get()) return
+        session.retry(request)
+    }
+
+    /**
+     * 会話の終わり。通信はスレッドプールで行い(メインスレッドで通信しない)、失敗・[java.util.concurrent.RejectedExecutionException] は握りつぶす。
+     * [close] より前に積んだものは、`shutdown` が積まれた仕事を流すので、閉じたあとでも送られる。ホストへの重複は [DeleteOnCloseBridge] が 1 回に抑える。
+     */
+    override fun endConversation(handle: String) {
+        runQuietlyOnExecutor { bridge.endConversation(handle) }
+    }
+
+    private fun runQuietlyOnExecutor(task: () -> Unit) {
+        try {
+            executor.execute { try { task() } catch (_: Exception) { } }
+        } catch (_: RuntimeException) { // RejectedExecutionException: 既に閉じている
+        }
+    }
+
     override fun cancel() {
         if (closed.get()) return
         session.cancel()
@@ -74,12 +99,10 @@ class AndroidVoiceRuntime(
         session.stopMicNow()
         // 閉じる前に作成が成功して、まだ取り消されていないセッション(配送が間に合わない・捨てられるもの)をここで回収する。
         // 作成の成功とこの回収は DeleteOnCloseBridge のロックで同期しているので、取りこぼしはない。通信はメインスレッドで行わない
-        for (id in bridge.close()) {
-            try {
-                executor.execute { try { bridge.cancel(id) } catch (_: Exception) { } }
-            } catch (_: RuntimeException) { // RejectedExecutionException: 既に閉じている
-            }
-        }
+        val orphans = bridge.close()
+        for (id in orphans.sessionIds) runQuietlyOnExecutor { bridge.cancel(id) }
+        // その作成の 201 にあった会話のハンドルも終える(まだ呼び出し側へ渡っていないもの。重複は DeleteOnCloseBridge が抑える)
+        for (handle in orphans.handles) runQuietlyOnExecutor { bridge.endConversation(handle) }
         // 取り消しの DELETE がプールに積まれたあとで、新規の受け付けを止めてループを閉じる
         scheduler.post {
             executor.shutdown()

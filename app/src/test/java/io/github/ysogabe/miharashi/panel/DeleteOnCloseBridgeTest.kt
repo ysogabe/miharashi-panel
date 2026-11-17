@@ -11,7 +11,7 @@ class DeleteOnCloseBridgeTest {
         var creates = 0
         var closedAtCreate: (() -> Boolean)? = null
         val order = mutableListOf<String>()
-        override fun createSession(req: SessionRequest): SessionInfo {
+        override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
             creates++
             order += "create"
             if (createThrows) throw BridgeException(BridgeFailure.NETWORK, 0, null, null)
@@ -28,6 +28,12 @@ class DeleteOnCloseBridgeTest {
         }
 
         override fun abortInFlight() { order += "abort" }
+
+        val conversationEnds = mutableListOf<String>()
+        override fun endConversation(handle: String) {
+            order += "endConversation"
+            conversationEnds += handle
+        }
     }
 
     private val req = SessionRequest("echo-show-5", "0.3.0", StartReason.SWIPE, null)
@@ -35,7 +41,7 @@ class DeleteOnCloseBridgeTest {
     @Test fun aCreateThatSucceedsAfterCloseIsDeletedOnTheCallingThread() {
         val inner = Inner()
         val b = DeleteOnCloseBridge(inner)
-        assertTrue(b.close().isEmpty()) // 通信中に close された(未取消の ID はまだない)
+        assertTrue(b.close().sessionIds.isEmpty()) // 通信中に close された(未取消の ID はまだない)
         val info = b.createSession(req)
         assertEquals("結果はそのまま返す(配送されれば VoiceSession も消す。DELETE は冪等)", "s-1", info.sessionId)
         assertEquals(listOf("s-1"), inner.cancels)
@@ -47,9 +53,9 @@ class DeleteOnCloseBridgeTest {
         val b = DeleteOnCloseBridge(inner)
         b.createSession(req)
         assertTrue("閉じる前は消さない", inner.cancels.isEmpty())
-        assertEquals("close が未取消の ID を返す(呼び出し側がワーカーで cancel する)", listOf("s-1"), b.close())
+        assertEquals("close が未取消の ID を返す(呼び出し側がワーカーで cancel する)", listOf("s-1"), b.close().sessionIds)
         assertTrue("close 自体は通信しない(メインスレッドから呼ばれる)", inner.cancels.isEmpty())
-        assertTrue("2 回目は空(冪等)", b.close().isEmpty())
+        assertTrue("2 回目は空(冪等)", b.close().sessionIds.isEmpty())
     }
 
     @Test fun anIdTheSessionAlreadyCancelledIsNotCollectedByClose() {
@@ -57,7 +63,7 @@ class DeleteOnCloseBridgeTest {
         val b = DeleteOnCloseBridge(inner)
         b.createSession(req)
         b.cancel("s-1") // VoiceSession が通常の取消で消した
-        assertTrue(b.close().isEmpty())
+        assertTrue(b.close().sessionIds.isEmpty())
         assertEquals(listOf("s-1"), inner.cancels)
     }
 
@@ -66,7 +72,7 @@ class DeleteOnCloseBridgeTest {
         val inner = Inner()
         val b = DeleteOnCloseBridge(inner)
         b.createSession(req)
-        val orphans = b.close()
+        val orphans = b.close().sessionIds
         orphans.forEach { b.cancel(it) }
         b.cancel("s-1")
         assertEquals(listOf("s-1", "s-1"), inner.cancels)
@@ -81,7 +87,7 @@ class DeleteOnCloseBridgeTest {
         val inner2 = Inner(id = "../x?y")
         val b2 = DeleteOnCloseBridge(inner2)
         b2.createSession(req)
-        assertTrue(b2.close().isEmpty())
+        assertTrue(b2.close().sessionIds.isEmpty())
     }
 
     @Test fun aFailingDeleteDoesNotFailTheCreate() {
@@ -102,7 +108,7 @@ class DeleteOnCloseBridgeTest {
             assertEquals(BridgeFailure.NETWORK, e.kind)
         }
         assertTrue(inner.cancels.isEmpty())
-        assertTrue(b.close().isEmpty())
+        assertTrue(b.close().sessionIds.isEmpty())
     }
 
     @Test fun everythingElseIsPassedThrough() {
@@ -125,7 +131,7 @@ class DeleteOnCloseBridgeTest {
         val closeDone = CountDownLatch(1)
         val inner = object : BridgeApi by Inner() {
             val deleted = java.util.concurrent.CopyOnWriteArrayList<String>()
-            override fun createSession(req: SessionRequest): SessionInfo {
+            override fun createSession(req: SessionRequest, isCurrent: () -> Boolean): SessionInfo {
                 created.countDown() // ホストは作成した。結果が呼び出し元に届く前に close を完了させる
                 assertTrue(closeDone.await(10, TimeUnit.SECONDS))
                 return SessionInfo("s-1")
@@ -136,7 +142,7 @@ class DeleteOnCloseBridgeTest {
         val b = DeleteOnCloseBridge(inner)
         val worker = Thread { b.createSession(req) }.apply { start() }
         assertTrue(created.await(10, TimeUnit.SECONDS))
-        val orphans = b.close() // ワーカーはまだ createSession の中: 未取消の ID はなく、閉じた印だけが立つ
+        val orphans = b.close().sessionIds // ワーカーはまだ createSession の中: 未取消の ID はなく、閉じた印だけが立つ
         assertTrue(orphans.isEmpty())
         closeDone.countDown()
         worker.join(10_000)
@@ -149,14 +155,148 @@ class DeleteOnCloseBridgeTest {
         val registeredDone = CountDownLatch(1)
         val inner = Inner()
         val b = DeleteOnCloseBridge(object : BridgeApi by inner {
-            override fun createSession(req: SessionRequest) = inner.createSession(req)
+            override fun createSession(req: SessionRequest, isCurrent: () -> Boolean) = inner.createSession(req, isCurrent)
         })
         val worker = Thread {
             b.createSession(req)
             registeredDone.countDown() // 結果の配送の直前
         }.apply { start() }
         assertTrue(registeredDone.await(10, TimeUnit.SECONDS))
-        assertEquals("登録済みの ID を close が回収する", listOf("s-1"), b.close())
+        assertEquals("登録済みの ID を close が回収する", listOf("s-1"), b.close().sessionIds)
         worker.join(10_000)
+    }
+
+    // ---- 会話のハンドル(段階 2a-P)
+
+    private val h1 = "Yp0vAbCdEfGhIjKlMnOp-_"
+    private val h2 = "Zq1wBcDeFgHiJkLmNoPq-_"
+
+    /** 作成が成功して 201 に会話のハンドルを載せる内側 */
+    private class ConvInner(var handle: String? = "Yp0vAbCdEfGhIjKlMnOp-_", var id: String = "s-1") : BridgeApi {
+        val cancels = mutableListOf<String>()
+        val ends = mutableListOf<String>()
+        var endThrows = false
+        override fun createSession(req: SessionRequest, isCurrent: () -> Boolean) = SessionInfo(id, conversation = ConversationInfo(handle, true, true))
+        override fun sendAudio(id: String, seq: Int, pcm: ByteArray, final: Boolean) = ChunkAck(AckState.LISTENING, seq)
+        override fun events(id: String, lastEventId: Int?, onEvent: (BridgeEvent) -> Unit) {}
+        override fun fetchReplyAudio(id: String, index: Int) = ByteArray(0)
+        override fun cancel(id: String) { cancels += id }
+        override fun endConversation(handle: String) {
+            ends += handle
+            if (endThrows) throw java.io.IOException("down")
+        }
+
+        override fun abortInFlight() {}
+    }
+
+    @Test fun theSameHandleIsSentToTheHostOnlyOnceNoMatterHowManyPathsEndIt() {
+        val inner = ConvInner()
+        val b = DeleteOnCloseBridge(inner)
+        b.endConversation(h1) // メインからの会話の終わり
+        b.endConversation(h1) // VoiceSession の古い 201 の後始末
+        b.endConversation(h1) // close の回収
+        assertEquals(listOf(h1), inner.ends)
+        b.endConversation(h2)
+        assertEquals(listOf(h1, h2), inner.ends)
+    }
+
+    @Test fun theRecentEndedSetIsBoundedAndForgetsTheOldest() {
+        val inner = ConvInner()
+        val b = DeleteOnCloseBridge(inner)
+        val handles = (0 until 17).map { "H%021d".format(it) } // 22 文字
+        handles.forEach { b.endConversation(it) }
+        assertEquals(17, inner.ends.size)
+        b.endConversation(handles.last()) // 最近のものはまだ覚えている
+        assertEquals(17, inner.ends.size)
+        b.endConversation(handles.first()) // 17 件目で押し出された最古のものは、もう一度送る
+        assertEquals(18, inner.ends.size)
+    }
+
+    @Test fun aMalformedHandleIsPassedToTheInnerWhichRejectsItAndIsNotRecorded() {
+        val inner = ConvInner()
+        val b = DeleteOnCloseBridge(inner)
+        b.endConversation("bad")
+        b.endConversation("bad")
+        assertEquals("形の検査は内側の仕事。重複の記録はしない", listOf("bad", "bad"), inner.ends)
+    }
+
+    @Test fun aFailingEndIsNotRetriedButDoesNotBreakTheCaller() {
+        val inner = ConvInner().also { it.endThrows = true }
+        val b = DeleteOnCloseBridge(inner)
+        try {
+            b.endConversation(h1)
+            fail()
+        } catch (_: java.io.IOException) {
+        }
+        b.endConversation(h1)
+        assertEquals("記録したあとで内側へ渡す(最良努力。同じハンドルは 1 回だけ試す)", listOf(h1), inner.ends)
+    }
+
+    @Test fun aCreateThatSucceedsAfterCloseDeletesAndEndsTheConversationOnce() {
+        val inner = ConvInner()
+        val b = DeleteOnCloseBridge(inner)
+        b.close()
+        val info = b.createSession(req)
+        assertEquals("s-1", info.sessionId)
+        assertEquals(h1, info.conversation?.handle)
+        assertEquals(listOf("s-1"), inner.cancels)
+        assertEquals(listOf(h1), inner.ends)
+        // VoiceSession の古い 201 の後始末が同じハンドルを送っても、ホストへは 1 回
+        b.endConversation(h1)
+        b.cancel("s-1")
+        assertEquals(listOf(h1), inner.ends)
+    }
+
+    @Test fun aCreateAfterCloseWithoutAHandleSendsNoConversationEnd() {
+        val inner = ConvInner(handle = null)
+        val b = DeleteOnCloseBridge(inner)
+        b.close()
+        b.createSession(req)
+        assertEquals(listOf("s-1"), inner.cancels)
+        assertTrue(inner.ends.isEmpty())
+    }
+
+    @Test fun aFailingEndAfterCloseDoesNotFailTheCreate() {
+        val inner = ConvInner().also { it.endThrows = true }
+        val b = DeleteOnCloseBridge(inner)
+        b.close()
+        assertEquals("s-1", b.createSession(req).sessionId)
+        assertEquals(listOf(h1), inner.ends)
+    }
+
+    @Test fun closeCollectsTheHandleOfAnUncancelledCreateTogetherWithItsId() {
+        val inner = ConvInner()
+        val b = DeleteOnCloseBridge(inner)
+        b.createSession(req)
+        assertTrue("閉じる前は何も送らない", inner.ends.isEmpty() && inner.cancels.isEmpty())
+        val orphans = b.close()
+        assertEquals(listOf("s-1"), orphans.sessionIds)
+        assertEquals(listOf(h1), orphans.handles)
+        assertTrue("close 自体は通信しない(メインスレッドから呼ばれる)", inner.ends.isEmpty() && inner.cancels.isEmpty())
+        assertFalse("toString にハンドルも ID も出さない", orphans.toString().contains(h1) || orphans.toString().contains("s-1"))
+        // 呼び出し側(AndroidVoiceRuntime)がワーカーで送る。持ち主(会話)がすでに送っていても 1 回
+        b.endConversation(h1)
+        orphans.handles.forEach { b.endConversation(it) }
+        assertEquals(listOf(h1), inner.ends)
+        assertTrue("2 回目の close は空", b.close().let { it.sessionIds.isEmpty() && it.handles.isEmpty() })
+    }
+
+    @Test fun anUncancelledCreateWithoutAHandleCollectsOnlyTheId() {
+        val inner = ConvInner(handle = null)
+        val b = DeleteOnCloseBridge(inner)
+        b.createSession(req)
+        val orphans = b.close()
+        assertEquals(listOf("s-1"), orphans.sessionIds)
+        assertTrue(orphans.handles.isEmpty())
+    }
+
+    @Test fun aCancelledSessionIsNotCollectedWithItsHandle() {
+        val inner = ConvInner()
+        val b = DeleteOnCloseBridge(inner)
+        b.createSession(req)
+        b.cancel("s-1") // 通常の取消。ハンドルは持ち主(会話)の責任に移っている
+        val orphans = b.close()
+        assertTrue(orphans.sessionIds.isEmpty())
+        assertTrue(orphans.handles.isEmpty())
     }
 }

@@ -35,7 +35,18 @@ enum class VoicePhase {
  * [openMic] は ① 開く前に許可を照合し、② `audio.start` を**ロックの外**で、許可の確認([AudioSource.start] の `isCurrent`)つきで呼び、③ 戻ったあとにもう一度許可を照合して、
  * 無効になっていれば(開始の最中に取消された)`audio.stop()` を含む取消の終了([finish])に進む。取消が「開始の前・最中・後」のどこに入っても、
  * 取消の後に新たに録音を始めたまま残ることはない: 前なら ① か `isCurrent` が弾き、最中なら `AudioSource` が公開せずに止めるか ③ が止め、後なら取消側の `audio.stop()` が止める。
- * 許可は [doStart] の時点で控える。
+ * 許可は **[start] / [retry] を呼んだスレッドで同期に**控え、[doStart] に渡す(キューに積まれたあとの値ではない)。[doStart] は、控えた値が現在と違えば
+ * (呼び出しのあとに [cancel] / [stopMicNow] / close が来た)何もしない(作成 0 回・状態も変えない)。違わなければそれを `openPermit` にする。
+ * したがって `start → cancel` の順は作成 0 回、`cancel → start` の順は今までどおり作成 1 回。
+ * 作成をワーカーに積んだあと、ワーカーが実際に呼ぶまでの間に来た取消も、ワーカーの呼び出しの**直前**の同じ照合で止める(作成の要求を送らず、結果は黙って捨てる)。
+ * 照合を通ったあとに来た取消だけが小さな窓として残り、それは `abortInFlight` の世代と、遅れた 201 の後始末(S7)で回収する。
+ *
+ * ## 往復(段階 2a-P)
+ * 1 つの [VoiceSession] は 1 往復(= 1 セッション)を受け持ち、続きの往復は呼ぶ側が新しい [start] で作る(状態は後退しない。DONE から LISTENING に戻さない)。
+ * 往復の要求は [TurnRequest]、結果は [TurnOutcome]([VoiceSessionListener.onEnded] に、呼ぶ側が付けた [TurnTag] と一緒に渡す)。結果は、終わった経路から
+ * 明示して決める([finish] の引数。理由の文字列から推測しない)。作成の応答に `conversation` があれば、現在の世代の作成に限り [VoiceSessionListener.onConversation]
+ * にそのまま渡す(ハンドルは持たない)。古い世代の作成が成功して届いたときは、`DELETE` に加えて会話の終わり([BridgeApi.endConversation])も最良努力で送る。
+ * 続きの往復([TurnRequest.follow])の無発話は ERROR にせず、取消と同じ IDLE に終える(`reason` は "no_speech"、結果は [TurnOutcome.ERROR])。
  *
  * ## 停止の順序(どの状態からでも同じ。[finish])
  * 世代を進める → マイクを止めて release → `abortInFlight()` → 最良努力で `cancel(id)` → 再生停止 → 画面に反映 → `onEnded`。
@@ -92,6 +103,8 @@ class VoiceSession(
     private var autoStarted = false
     private var startReason = StartReason.SWIPE
     private var noticeId: String? = null
+    private var follow = false
+    private var tag = TurnTag.NONE
     private var limits = EffectiveLimits.DEFAULTS
     private var transcript = ""
     private var reply = ""
@@ -144,8 +157,15 @@ class VoiceSession(
      * B の確定で呼ぶ。進行中(PREPARING〜REPLYING)のときは**無視**する(同時に 1 セッション。呼び側は先に [cancel] する)。
      * IDLE・DONE・ERROR からは新しいセッションを始める。`noticeId` が `^[A-Za-z0-9_.:-]{1,64}$` に合わなければ送らない。
      */
-    fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) {
-        scheduler.post { doStart(reason, noticeId, autoStarted) }
+    fun start(reason: StartReason, noticeId: String?, autoStarted: Boolean) = start(TurnRequest(reason, noticeId, autoStarted))
+
+    /**
+     * 往復を始める([start] の [TurnRequest] 版)。**呼び出したスレッドで同期に**マイクを開く許可を控える。控えたあとに [cancel] / [stopMicNow] / close が来たら、
+     * キューに積まれた開始は何もしない(作成の要求も出さない)。
+     */
+    fun start(request: TurnRequest) {
+        val permit = micPermit.get()
+        scheduler.post { doStart(request, permit) }
     }
 
     /** B を離れる・背面・待機・設定画面。どの状態からでもマイクを止めて release し、IDLE に戻す。冪等。 */
@@ -170,33 +190,55 @@ class VoiceSession(
 
     /** ERROR 表示のタップ。直前と同じ起点で新しいセッションを始める(利用者の操作なので `autoStarted = false`)。ERROR 以外では何もしない。 */
     fun retry() {
+        val permit = micPermit.get()
         scheduler.post {
-            if (_phase == VoicePhase.ERROR) doStart(startReason, noticeId, auto = false)
+            if (_phase == VoicePhase.ERROR) doStart(TurnRequest(startReason, noticeId, autoStarted = false), permit)
+        }
+    }
+
+    /** ERROR のときだけ [request] で新しい往復を始める(それ以外では何もしない)。許可は [start] と同じく呼び出しスレッドで控える。 */
+    fun retry(request: TurnRequest) {
+        val permit = micPermit.get()
+        scheduler.post {
+            if (_phase == VoicePhase.ERROR) doStart(request, permit)
         }
     }
 
     // =========================================================================================
     // 開始と終了
 
-    private fun doStart(reason: StartReason, notice: String?, auto: Boolean) {
+    private fun doStart(request: TurnRequest, permit: Int) {
         if (_phase.isActive) return
+        // 呼び出しのあとに取消(cancel / stopMicNow / close)が来ていた。何もしない(世代も状態も表示のタイマーも変えない)
+        if (micPermit.get() != permit) return
         resetForNewSession()
+        val reason = request.reason
         startReason = reason
-        noticeId = notice?.takeIf { VoiceLimits.NOTICE_ID_REGEX.matches(it) }
-        autoStarted = auto
-        openPermit = micPermit.get() // これ以後の cancel / stopMicNow / close で、この許可は無効になる
+        noticeId = request.noticeId?.takeIf { VoiceLimits.NOTICE_ID_REGEX.matches(it) }
+        autoStarted = request.autoStarted
+        follow = request.follow
+        tag = request.tag
+        openPermit = permit // これ以後の cancel / stopMicNow / close で、この許可は無効になる
         _phase = VoicePhase.PREPARING
         val g = gen
         arm(Timer.TOTAL, sessionMaxMs) { onTotalTimeout() }
         arm(Timer.CREATE, VoiceLimits.CREATE_TIMEOUT_MS) { fail(VoiceErrorCode.HOST_UNREACHABLE, "create timeout") }
         emit()
-        val req = SessionRequest(clientId, appVersion, reason, noticeId)
-        runBlocking({ bridge.createSession(req) }) { r -> onCreated(g, r) }
+        val req = SessionRequest(clientId, appVersion, reason, noticeId, noSpeechS = request.noSpeechS, conversation = request.conversation)
+        // ワーカーで実際に呼ぶ直前に、控えた許可を照合する(積んだあとに来た取消は、作成の要求を送る前に止める)。
+        // 通信の層(BridgeClient)にも同じ照合を渡す: 接続の登録(中断の世代を控えるのと同じロックの中)・通信の開始・本文を書く直前で見る。
+        // 取消は先に許可を進めてから abortInFlight するので、「世代を取り直されて中断が効かない」窓は無い。
+        // 最後の照合を通ったあと本文を書き始めるまでの一瞬だけ残り、それは finish の abortInFlight と、遅れて届く 201 の後始末(S7: DELETE と会話の終わり)が回収する
+        runBlocking({
+            if (micPermit.get() != permit) throw CreateCancelledException()
+            // 通信の層でも、接続の登録・通信の開始・本文の送信の直前に同じ照合をする(ここで通った後に来た取消も、要求を送る前に止める)
+            bridge.createSession(req) { micPermit.get() == permit }
+        }) { r -> onCreated(g, r) }
     }
 
     private fun doCancel() {
         if (_phase.isActive) {
-            finish(VoicePhase.IDLE, null, null, "cancelled")
+            cancelledToIdle()
             return
         }
         // 進行中でなくても、マイクと再生は確実に止める(防御)。ホストへは何も送らない
@@ -251,7 +293,7 @@ class VoiceSession(
      * 終わらせる唯一の入口(停止の順序)。`next` は DONE・ERROR・IDLE(取消)。
      * IDLE のときは本文を消す(B を離れたら認識結果・返答を残さない)。`onEnded` は進行中だったセッションにつき 1 回。
      */
-    private fun finish(next: VoicePhase, err: VoiceErrorCode?, diag: String?, reason: String) {
+    private fun finish(next: VoicePhase, err: VoiceErrorCode?, diag: String?, reason: String, outcome: TurnOutcome) {
         val wasActive = _phase.isActive
         val id = sessionId
         gen++ // 1. 古い結果・タイマーを無効にする
@@ -276,12 +318,25 @@ class VoiceSession(
         _phase = next
         if (next == VoicePhase.ERROR) arm(Timer.ERROR_DISPLAY, VoiceLimits.ERROR_DISPLAY_MS) { errorToIdle() }
         emit() // 6. 画面へ
-        if (wasActive) safe { listener.onEnded(autoStarted, reason) }
+        if (wasActive) safe { listener.onEnded(autoStarted, reason, outcome, tag) }
     }
 
-    private fun fail(code: VoiceErrorCode, diag: String? = null) = finish(VoicePhase.ERROR, code, diag, code.code)
+    /**
+     * ERROR で終える。**続きの往復([follow])の無発話だけは ERROR にせず**、取消と同じ IDLE に終える(ERROR の表示のタイマーも張らない。`reason` は "no_speech"、
+     * 結果は [TurnOutcome.ERROR])。最初の往復の無発話と、`mic_silent` などほかのエラーは続きでも今までどおり ERROR。
+     */
+    private fun fail(code: VoiceErrorCode, diag: String? = null) {
+        if (follow && code == VoiceErrorCode.NO_SPEECH) {
+            finish(VoicePhase.IDLE, null, null, code.code, TurnOutcome.ERROR)
+        } else {
+            finish(VoicePhase.ERROR, code, diag, code.code, TurnOutcome.ERROR)
+        }
+    }
 
-    private fun finishDone(err: VoiceErrorCode?, diag: String?) = finish(VoicePhase.DONE, err, diag, err?.code ?: "done")
+    private fun finishDone(err: VoiceErrorCode?, diag: String?, outcome: TurnOutcome) =
+        finish(VoicePhase.DONE, err, diag, err?.code ?: "done", outcome)
+
+    private fun cancelledToIdle() = finish(VoicePhase.IDLE, null, null, "cancelled", TurnOutcome.CANCELLED)
 
     private fun errorToIdle() {
         if (_phase != VoicePhase.ERROR) return
@@ -292,19 +347,28 @@ class VoiceSession(
 
     private fun onTotalTimeout() {
         // 返答が手元にあるなら成功として閉じる。それ以外は取消して timeout
-        if (_phase == VoicePhase.REPLYING) finishDone(null, "session time limit") else fail(VoiceErrorCode.TIMEOUT, "session time limit")
+        if (_phase == VoicePhase.REPLYING) finishDone(null, "session time limit", TurnOutcome.SESSION_TIMEOUT) else fail(VoiceErrorCode.TIMEOUT, "session time limit")
     }
 
     // =========================================================================================
     // 作成とマイク
 
     private fun onCreated(g: Int, r: Result<SessionInfo>) {
+        if (r.exceptionOrNull() is CreateCancelledException) {
+            // 作成の要求を出す前に取消が来ていた。エラーにしない。まだこの世代なら取消として終える(古い世代なら取消の finish が済んでいる)
+            if (g == gen && _phase == VoicePhase.PREPARING) cancelledToIdle()
+            return
+        }
         val info = r.getOrNull()
         if (g != gen || _phase != VoicePhase.PREPARING) {
-            // S7: 離脱したあとに作成が成功して届いた。録音せず、直ちに DELETE(id が正しい形のときだけ)
-            if (info != null && VoiceLimits.SESSION_ID_REGEX.matches(info.sessionId)) {
-                val id = info.sessionId
-                runBlocking({ bridge.cancel(id) }) { }
+            // S7: 離脱したあとに作成が成功して届いた。録音せず、直ちに DELETE(id が正しい形のときだけ)。
+            // 201 に新しいハンドルがあれば会話の終わりも送る(リスナーには渡さない。今の会話のハンドルを古い世代のもので上書きしない)
+            if (info != null) {
+                if (VoiceLimits.SESSION_ID_REGEX.matches(info.sessionId)) {
+                    val id = info.sessionId
+                    runBlocking({ bridge.cancel(id) }) { }
+                }
+                endConversationQuietly(info)
             }
             return
         }
@@ -315,13 +379,22 @@ class VoiceSession(
             return
         }
         if (!VoiceLimits.SESSION_ID_REGEX.matches(info.sessionId)) {
+            endConversationQuietly(info) // 誰もこのハンドルを持たない。会話の終わりだけ送る
             fail(VoiceErrorCode.HOST_UNREACHABLE, "create: invalid session id")
             return
         }
         sessionId = info.sessionId
         limits = EffectiveLimits.resolve(info.limits)
+        // ハンドルの持ち主は呼び出し側。startSse / openMic より前に渡す(openMic が取消で止まる場合でも、この通知は出ている)
+        info.conversation?.let { c -> safe { listener.onConversation(tag, c) } }
         startSse()
         openMic(g)
+    }
+
+    /** 201 のハンドルで、最良努力の会話の終わり(通信はワーカー。結果は無視)。ハンドルが無ければ何もしない */
+    private fun endConversationQuietly(info: SessionInfo) {
+        val handle = info.conversation?.handle ?: return
+        runBlocking({ bridge.endConversation(handle) }) { }
     }
 
     private fun openMic(g: Int) {
@@ -329,7 +402,7 @@ class VoiceSession(
         val isCurrent = { micPermit.get() == permit }
         if (!isCurrent()) {
             // 取消(離脱・背面・close・stopMicNow)が先に来ていた。録音せず、取消として終える(ホストのセッションは finish が DELETE する)
-            finish(VoicePhase.IDLE, null, null, "cancelled")
+            cancelledToIdle()
             return
         }
         var failure: Pair<VoiceErrorCode, String>? = null
@@ -351,7 +424,7 @@ class VoiceSession(
         }
         if (!isCurrent()) {
             // 開始の最中に取消された。finish が audio.stop() を呼ぶので、AudioSource が静かに無視していても録音は残らない
-            finish(VoicePhase.IDLE, null, null, "cancelled")
+            cancelledToIdle()
             return
         }
         failure?.let { (code, diag) ->
@@ -373,7 +446,7 @@ class VoiceSession(
         emit() // マイク使用中のスナップショットの通知が失敗したら、ここでセッションが終わっている
         if (!_phase.isMicPhase) return
         try {
-            listener.onMicOpened(autoStarted)
+            listener.onMicOpened(autoStarted, follow, tag)
         } catch (_: Exception) {
             // 開始音を鳴らせなかった(利用者に録音の合図が届かない)まま録音を続けない。例外のメッセージは診断に載せない
             fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: start tone notify failed")
@@ -628,7 +701,7 @@ class VoiceSession(
                 if (replyHandled) return // 返答を受け取ったあとの error では捨てない
                 val code = VoiceFailures.fromHostCode(ev.code)
                 val diag = VoiceFailures.line("host ${ev.code}" + (ev.message?.let { ": $it" } ?: ""))
-                if (code != null) fail(code, diag) else finish(VoicePhase.ERROR, null, diag, "host_" + VoiceFailures.reasonFromRaw(ev.code))
+                if (code != null) fail(code, diag) else finish(VoicePhase.ERROR, null, diag, "host_" + VoiceFailures.reasonFromRaw(ev.code), TurnOutcome.ERROR)
             }
             is BridgeEvent.Done -> {
                 sseDone = true
@@ -650,13 +723,15 @@ class VoiceSession(
         val audioInfo = ev.audio
         if (audioInfo == null) { // S11: テキストを表示して DONE。`audio_error` があれば(空・未知の文字列も)再生の失敗として固定文言を併記する
             val raw = ev.audioError
-            if (raw == null) finishDone(null, null) else finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.line("tts: $raw"))
+            // `audio_error` の有無にかかわらず、音声のない返答は TEXT_ONLY(続けない)
+            if (raw == null) finishDone(null, null, TurnOutcome.TEXT_ONLY)
+            else finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.line("tts: $raw"), TurnOutcome.TEXT_ONLY)
             return
         }
         if (!audioInfo.format.equals("wav", ignoreCase = true) || audioInfo.bytes !in 1..VoiceLimits.REPLY_AUDIO_MAX_BYTES.toLong() ||
             audioInfo.durationMs !in 1..VoiceLimits.REPLY_AUDIO_MAX_MS
         ) {
-            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "reply audio rejected")
+            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "reply audio rejected", TurnOutcome.PLAYBACK_FAILED)
             return
         }
         replyAudio = audioInfo
@@ -671,7 +746,7 @@ class VoiceSession(
         val token = ++requestCounter
         fetchToken = token
         arm(Timer.REPLY_AUDIO, VoiceLimits.REPLY_AUDIO_FETCH_TIMEOUT_MS) {
-            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "reply audio timeout")
+            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "reply audio timeout", TurnOutcome.PLAYBACK_FAILED)
         }
         runBlocking({ bridge.fetchReplyAudio(id, 0) }) { r -> onAudioFetched(g, token, r) }
     }
@@ -681,21 +756,21 @@ class VoiceSession(
         cancelTimer(Timer.REPLY_AUDIO)
         val wav = r.getOrNull()
         if (wav == null) {
-            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.diagnostics("reply audio", r.exceptionOrNull()))
+            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.diagnostics("reply audio", r.exceptionOrNull()), TurnOutcome.PLAYBACK_FAILED)
             return
         }
         if (wav.isEmpty() || wav.size > VoiceLimits.REPLY_AUDIO_MAX_BYTES) {
-            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "reply audio size")
+            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "reply audio size", TurnOutcome.PLAYBACK_FAILED)
             return
         }
         val duration = playbackMs(wav)
         arm(Timer.PLAYBACK, minOf(duration + VoiceLimits.PLAYBACK_MARGIN_MS, VoiceLimits.REPLY_AUDIO_MAX_MS)) {
-            finishDone(null, "playback timeout") // 停止して DONE
+            finishDone(null, "playback timeout", TurnOutcome.PLAYBACK_TIMEOUT) // 停止して DONE
         }
         try {
             player.play(wav) { ok -> scheduler.post { onPlaybackDone(g, ok) } }
         } catch (e: Exception) {
-            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.diagnostics("play", e))
+            finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, VoiceFailures.diagnostics("play", e), TurnOutcome.PLAYBACK_FAILED)
         }
     }
 
@@ -713,7 +788,7 @@ class VoiceSession(
 
     private fun onPlaybackDone(g: Int, ok: Boolean) {
         if (g != gen || _phase != VoicePhase.REPLYING) return
-        if (ok) finishDone(null, null) else finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "playback failed")
+        if (ok) finishDone(null, null, TurnOutcome.PLAYED) else finishDone(VoiceErrorCode.REPLY_AUDIO_FAILED, "playback failed", TurnOutcome.PLAYBACK_FAILED)
     }
 
     // =========================================================================================
