@@ -131,6 +131,79 @@ class DaidaiViewDrawingTest {
         for (i in changed) assertTrue("(${i % 480},${i / 480})", i / 480 in 200..222 && i % 480 in 160..470)
     }
 
+    // ---- 段階 2b-2(R15): 表記を描き終えた確認。Robolectric は onDraw を自動では回さない(view.draw(Canvas) を明示したときだけ)ので、描画は明示する
+
+    /** 描いた文字列を記録する Canvas。確認のコールバックが呼ばれた時点で、表記がすでに描かれていることを確かめる */
+    private class RecordingCanvas(bitmap: Bitmap) : Canvas(bitmap) {
+        val texts = mutableListOf<String>()
+        override fun drawText(text: String, x: Float, y: Float, paint: android.graphics.Paint) {
+            texts += text
+            super.drawText(text, x, y, paint)
+        }
+    }
+
+    private fun drawWithAcks(v: DaidaiView): List<Int> {
+        val acks = mutableListOf<Int>()
+        v.onBrainNoticeDrawn = { acks += it }
+        pixels(v)
+        return acks
+    }
+
+    private val cloudText = "だいだい(クラウド)に送ります"
+
+    @Test fun anAckIsReturnedWhenTheNoticeWasDrawnAndWithTheTokenOfTheDrawnState() {
+        val v = newView()
+        v.render(DaidaiUiState(voice = VoiceState.IDLE, preparing = true, brain = cloudDaidai, brainAck = 41))
+        assertEquals(listOf(41), drawWithAcks(v))
+    }
+
+    @Test fun theAckComesAfterTheNoticeTextWasDrawn() {
+        val v = newView()
+        v.render(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, brain = cloudDaidai, brainAck = 9))
+        val canvas = RecordingCanvas(Bitmap.createBitmap(960, 480, Bitmap.Config.ARGB_8888))
+        val drawnWhenAcked = mutableListOf<Boolean>()
+        v.onBrainNoticeDrawn = { drawnWhenAcked += canvas.texts.contains(cloudText) }
+        v.draw(canvas)
+        assertEquals("確認が出た時点で、表記の文字はすでに描かれている", listOf(true), drawnWhenAcked)
+    }
+
+    @Test fun noAckWhenNoNoticeIsDrawn() {
+        // 脳が無い(旧ホスト)・外へ出ない(印 0)・マイクが閉じている・待機・エラー・案内の表示では、印があっても返さない
+        val cases = mapOf(
+            "旧ホスト" to DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, brainAck = 5),
+            "印なし(host)" to DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, brain = BrainInfo(BrainName.OTHER, BrainEgress.HOST)),
+            "待機" to DaidaiUiState(voice = VoiceState.IDLE, brain = cloudDaidai, brainAck = 5),
+            "応答待ち" to DaidaiUiState(voice = VoiceState.WAITING, brain = cloudDaidai, brainAck = 5),
+            "エラー" to DaidaiUiState(voice = VoiceState.ERROR, error = VoiceErrorCode.MIC_UNAVAILABLE, brain = cloudDaidai, brainAck = 5),
+            "案内" to DaidaiUiState.forSettings(false).copy(preparing = true, brain = cloudDaidai, brainAck = 5),
+        )
+        for ((name, state) in cases) {
+            val v = newView()
+            v.render(state)
+            assertEquals(name, emptyList<Int>(), drawWithAcks(v))
+        }
+    }
+
+    @Test fun renderAloneNeverAcksAndEveryDrawAcksAgainWithTheSameToken() {
+        val v = newView()
+        val acks = mutableListOf<Int>()
+        v.onBrainNoticeDrawn = { acks += it }
+        v.render(DaidaiUiState(voice = VoiceState.IDLE, preparing = true, brain = cloudDaidai, brainAck = 3))
+        assertTrue("render / invalidate の時点では返さない", acks.isEmpty())
+        pixels(v)
+        pixels(v)
+        assertEquals("描くたびに同じ印(重複はセッションが捨てる)", listOf(3, 3), acks)
+        v.render(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, brain = cloudDaidai, brainAck = 3))
+        pixels(v)
+        assertEquals(listOf(3, 3, 3), acks)
+        v.render(DaidaiUiState(voice = VoiceState.IDLE, preparing = true, brain = cloudDaidai, brainAck = 4))
+        pixels(v)
+        assertEquals("次の往復は新しい印", listOf(3, 3, 3, 4), acks)
+        v.render(DaidaiUiState(voice = VoiceState.WAITING, brain = cloudDaidai, brainAck = 4))
+        pixels(v)
+        assertEquals("表記のない描画では返さない", listOf(3, 3, 3, 4), acks)
+    }
+
     @Test fun contrastStrengthChangesColors() {
         for ((name, s) in states) {
             val dim = draw(s, 0f)

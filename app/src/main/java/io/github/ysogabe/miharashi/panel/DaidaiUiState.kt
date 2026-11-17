@@ -73,6 +73,11 @@ data class DaidaiUiState(
     val brain: BrainInfo? = null,
     /** セッションが準備中(作成の応答のあと〜録音が始まる前。合図の前後・残響の待ちを含む)。[brainNotice] の条件 */
     val preparing: Boolean = false,
+    /**
+     * 「外へ出る」表記の描画の確認の印([VoiceSnapshot.brainAck])。0 でないとき、[DaidaiView] は [brainNotice] を描き終えたら、この印を返す(録音を始める確認。R15)。
+     * 外へ出ない脳(旧ホスト・`host`)は 0 で、何も返さない。
+     */
+    val brainAck: Int = 0,
 ) {
     /**
      * 作成の応答を受けてから録音が終わるまで(準備中・合図の再生中・聞き取り中・認識中・マイクが録音中)、途切れずに出す、どこへ送るかの表記(R15)。

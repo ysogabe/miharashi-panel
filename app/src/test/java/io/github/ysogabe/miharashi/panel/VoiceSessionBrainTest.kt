@@ -75,7 +75,7 @@ class VoiceSessionBrainTest {
 
     /**
      * 通知の順序(1 往復ぶん)。201 のあとの最初の「脳つき」スナップショットは、マイク使用中のどのスナップショットよりも前で、
-     * 表記の条件を満たす(画面への配送は FIFO なので、表記が先に描かれる)。そこから録音が終わる(応答待ち)まで、表記が途切れない。
+     * 表記の条件を満たす(スナップショットとして先に出る。実際に描かれたことは、関所が画面の確認で確かめる。[VoiceSessionBrainGateTest])。そこから録音が終わる(応答待ち)まで、表記が途切れない。
      */
     private fun assertNoticeComesFirstAndNeverBreaks(snaps: List<VoiceSnapshot>) {
         val firstBrain = snaps.indexOfFirst { it.brain != null }

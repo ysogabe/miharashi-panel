@@ -39,7 +39,7 @@ class DaidaiVoiceGreetingSessionTest {
         val rendered = mutableListOf<DaidaiUiState>()
         var tones = 0
         val policy = AutoSwitchPolicy(AmbientLightGate(sample = { LuxSample(100f) }, config = { GateConfig.from(configured) }))
-        val voice = DaidaiVoice(
+        val voice: DaidaiVoice = DaidaiVoice(
             pages, policy, { configured },
             VoiceRuntimeFactory { _, listener ->
                 val session = VoiceSession(audio, bridge, player, sim, sim, worker, listener, clientId = "echo-show-5", appVersion = "0.3.0")
@@ -49,12 +49,14 @@ class DaidaiVoiceGreetingSessionTest {
                     override fun start(request: TurnRequest) = session.start(request)
                     override fun retry(request: TurnRequest) = session.retry(request)
                     override fun endConversation(handle: String) = Unit
+                    override fun brainNoticeDrawn(token: Int) = session.brainNoticeDrawn(token)
                     override fun cancel() = session.cancel()
                     override fun stopMicNow() = session.stopMicNow()
                     override fun close() { session.cancel(); session.stopMicNow() }
                 }
             },
-            sim, { rendered += it }, StartSound { tones++ }, { sim.now }, { GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT) },
+            // 画面の偽: Robolectric は onDraw を回さないので、表記を描くはずの状態を受けたら、描き終えた確認を返す(DaidaiView と同じ条件)
+            sim, { rendered += it; it.drawnBrainAck().let { ack -> if (ack != 0) voice.onBrainNoticeDrawn(ack) } }, StartSound { tones++ }, { sim.now }, { GateVerdict(Presence.PRESENT, AmbientLightGate.REASON_BRIGHT) },
             cueFactory = CueSourceFactory { Store(cues) }, wallClockMs = { evening }, tzOffsetMs = { jst },
         )
         val ui get() = rendered.last()

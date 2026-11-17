@@ -591,9 +591,19 @@ stateDiagram-v2
   | `host` | このホストで答えます(外へは送りません) | 控えめな色 |
   | 脳なし（旧ホスト） | （何も出さない） | — |
 
-  状態の流れは、`VoiceSession` が 201 を受けた時点（`onConversation` と同じ位置、SSE・合図・マイクより前）で往復の脳を持ち、その場でスナップショットを 1 回出す（`brain` と準備中の印 `preparing` が載る）。`VoiceSnapshot.brain` / `preparing` → `DaidaiUiState.brain` / `preparing` の順に載せ、画面への配送は main への FIFO なので、この表記は、マイク使用中のスナップショットより先に届く。文言と出す条件は `DaidaiText.brainNotice` と `DaidaiUiState.brainNotice`。
+  状態の流れは、`VoiceSession` が 201 を受けた時点（`onConversation` と同じ位置、SSE・合図・マイクより前）で往復の脳を持ち、その場でスナップショットを 1 回出す（`brain` と準備中の印 `preparing` が載る）。`VoiceSnapshot.brain` / `preparing` → `DaidaiUiState.brain` / `preparing` の順に載せる。文言と出す条件は `DaidaiText.brainNotice` と `DaidaiUiState.brainNotice`。
 
-  録音を始める前に、画面への反映の確認は待たない（新しい競合の面を増やさない）。そのため、main の配送の遅れ（数 ms 程度）のぶん、録音の開始と表記の描画が前後しうる。この間の音声はホスト（このホスト）にしか送られず、クラウドへ出るのは発話の終わりのあとの認識テキストだけで、その時点では表記は必ず描かれているので、許容する。
+  **描いたことを確かめてから録音を始める。** 画面への反映は main への post で、main の遅れに上限が無い。`DaidaiView.render()` は `invalidate()` を予約するだけなので、スナップショットを出しただけでは、表記が描かれる前に録音が始まり、表記が一度も描かれないまま発話が終わって認識テキストがクラウドへ送られうる。そこで、外へ出る区分（`brain.egress` が `host` 以外 = `lan`・`cloud`・`UNKNOWN`）の往復だけ、マイクを開く関所で、画面が表記を描き終えた確認を待つ。
+
+  | スレッド | 動き |
+  |---|---|
+  | セッションのスレッド | 201 で、往復ごとに新しい確認の印（`brainAck`。プロセスで一意）を払い出し、スナップショットに載せて出す。マイクを開く関所は `VoiceSession.openMic` の 1 か所（合図ありの往復も、合図なしの続きの往復も通る）。確認がすでに届いていれば待たずに進み、届いていなければ待ちの期限（`VoiceLimits.BRAIN_NOTICE_DRAW_MS` = 1.5 秒）を張って `audio.start()` を呼ばない。確認は、待っているときだけ `openMic` を進める（合図の最中に届いたものは覚えるだけで、マイクは合図が終わってから開く） |
+  | main | スナップショット → `DaidaiVoice.renderMerged` → `DaidaiView.render` の順で、印を `DaidaiUiState.brainAck` に載せる。`DaidaiView.onDraw` が表記を描き終えた時点（`render` / `invalidate` の時点ではない）で、描いた状態の印を `onBrainNoticeDrawn` で返す。`DaidaiVoice.onBrainNoticeDrawn` は今のスナップショットの印と一致するものだけを `VoiceRuntime.brainNoticeDrawn` に渡す |
+  | セッションのスレッド（確認の受け取り） | `VoiceSession.brainNoticeDrawn` は `scheduler.post` するだけ（main から状態に直接触らない）。今の往復の印と一致しない確認（古い往復・別のセッション・0）は捨てる |
+
+  期限までに確認が来なければ、録音せず `mic_unavailable`（診断は固定の `mic: brain notice not drawn`）で終える。終わり方は既存の失敗の経路のままで、ホストの `DELETE`、会話の終わり（ハンドルがあるとき）、画面の ERROR を 1 回ずつ出す。待ちの間の取消は今の取消の経路で、録音 0 回のまま終わる。`brain` が無い（旧ホスト）と `host` の往復は印を 0 にして関所は何もせず、今の経路と同じ。
+
+  **保証の境目は `onDraw` の完了**で、画面の合成・表示（パネルへの出力）の遅れは含まない。`onDraw` が終わってからパネルに映るまでの間は、確認では確かめない。この間の遅れの長さは測っていない。ただし、録音した音声が届くのはホスト（このホスト）までで、クラウドへ出るのは発話の終わりのあとの認識テキストだけである。
 - A 側に足すのはヘッダーの小さな未読チップ（R17）とページ点のみ。既存の `PanelLayout` の矩形（ボタン・カード）は動かさない。
 
 ### 5.7 スワイプの仕様

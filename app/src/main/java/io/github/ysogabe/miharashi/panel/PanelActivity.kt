@@ -132,6 +132,7 @@ class PanelActivity : Activity() {
         )
         daidai.entryListener = voice
         daidaiView.onErrorTap = voice::onErrorTapped // 再試行は利用者のタップだけ
+        daidaiView.onBrainNoticeDrawn = voice::onBrainNoticeDrawn // 「外へ出る」表記を描き終えたら、録音の開始の確認として返す(R15)
         light = LightSensorReader(this) { value ->
             lux = value
             if (active) {

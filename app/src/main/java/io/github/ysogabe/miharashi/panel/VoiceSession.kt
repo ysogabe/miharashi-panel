@@ -68,6 +68,13 @@ enum class VoicePhase {
  * 開いてから [startToneGuardMs] の間に届いた録音は捨てる(送らない・無音判定にも使わない)。`mic_silent` の判定窓と 45 秒の上限は、
  * 前者は保護時間の後から、後者はマイクを開いた時刻から数える。
  *
+ * ## 「外へ出る」表記の確認(段階 2b-2。R15。設計書(段階 2)§6.6)
+ * 脳が外へ出る区分(201 の `brain.egress` が `host` 以外。LAN・クラウド・不明)のとき、**マイクを開く関所は [openMic] の 1 か所**(合図ありの往復も、合図なしの続きの往復もここを通る)。
+ * 画面が表記を描き終えた確認([brainNoticeDrawn]。[DaidaiView] の `onDraw` の完了で、メインから `post` される)が届くまで `audio.start()` を呼ばない。
+ * 確認は 201 のスナップショットに載せた印([VoiceSnapshot.brainAck])と一致するものだけを受け(古い往復のものは捨てる)、合図の再生中に届けば覚えておき、関所では待たない。
+ * 期限([VoiceLimits.BRAIN_NOTICE_DRAW_MS])までに来なければ、録音せず `mic_unavailable`("mic: brain notice not drawn")で終える。待つ間の取消は、録音 0 回で終わる。
+ * brain なし(旧ホスト)と `host` は印が 0 で、関所は何もしない。保証の境目は `onDraw` の完了までで、画面の合成・表示(パネルへの出力)の遅れは含まない。
+ *
  * ## 開始の合図(段 G。設計書(段階 2)§5.8.4)
  * [TurnRequest.cue] があれば(会話の最初の往復だけ。続きの往復では無視する)、作成が成功して `startSse` したあと、**マイクを閉じたまま**
  * 挨拶を [player] で鳴らす(状態は PREPARING のまま。スナップショットの `cuePlaying` を立てる)。鳴り終えたら [cueEchoWaitMs] 待ってマイクを開き、
@@ -99,7 +106,7 @@ class VoiceSession(
     /** 合図の再生の完了からマイクを開くまでの残響の待ち(段 G) */
     private val cueEchoWaitMs: Long = VoiceLimits.CUE_ECHO_WAIT_MS,
 ) {
-    private enum class Timer { TOTAL, CREATE, CHUNK, MIC_CAP, MIC_SILENT, NO_SPEECH, REPLY, REPLY_AUDIO, PLAYBACK, SSE_RETRY, ERROR_DISPLAY, CUE, CUE_GAP }
+    private enum class Timer { TOTAL, CREATE, CHUNK, MIC_CAP, MIC_SILENT, NO_SPEECH, REPLY, REPLY_AUDIO, PLAYBACK, SSE_RETRY, ERROR_DISPLAY, CUE, CUE_GAP, BRAIN_NOTICE }
 
     private class Chunk(val seq: Int, val pcm: ByteArray, val final: Boolean) {
         var attempt = 0
@@ -127,6 +134,19 @@ class VoiceSession(
 
     /** このセッション(往復)の脳(201 の `brain`)。往復ごとに決め、新しいセッションの作成前・作成失敗・取消では null(前の往復の値を持ち越さない) */
     private var brain: BrainInfo? = null
+
+    // ---- 「外へ出る」表記の描画の確認(段階 2b-2。R15。設計書(段階 2)§6.6)
+    /**
+     * この往復の確認の印。脳が外へ出る区分(`egress != HOST`。LAN・クラウド・不明)のときだけ、作成の応答を受けた時点で払い出す(往復ごとに新しい。プロセスで一意)。
+     * 0 は「確認が要らない」(脳が無い=旧ホスト、または `host`)。スナップショットに載せ、画面が表記を描き終えたら同じ印を [brainNoticeDrawn] で返す。
+     */
+    private var brainAckToken = 0
+
+    /** [brainAckToken] の確認が届いた(画面が表記を描き終えた) */
+    private var brainAckDrawn = false
+
+    /** マイクを開く関所([openMic])が、確認を待っている(期限の [Timer.BRAIN_NOTICE] が張ってある)。確認はこの間だけ、マイクを開く処理を進める */
+    private var brainGateHolding = false
     private var lastSnapshot: VoiceSnapshot? = null
 
     // ---- 開始の合図(段 G)
@@ -320,6 +340,9 @@ class VoiceSession(
         diagnostics = null
         noticePose = null
         brain = null
+        brainAckToken = 0
+        brainAckDrawn = false
+        brainGateHolding = false
     }
 
     /**
@@ -331,6 +354,7 @@ class VoiceSession(
         val id = sessionId
         gen++ // 1. 古い結果・タイマーを無効にする
         cancelAllTimers()
+        brainGateHolding = false
         safe { audio.stop() } // 2. マイクを止めて release(通信の完了を待たない)
         micOpen = false
         safe { bridge.abortInFlight() } // 3. 通信中の接続を切る
@@ -420,10 +444,13 @@ class VoiceSession(
         }
         sessionId = info.sessionId
         limits = EffectiveLimits.resolve(info.limits)
-        // 脳の区分は、合図(startCue)・マイクを開く(openMic)のどのスナップショットよりも前に持つ(マイクが開いている間は必ず表記が出せるように)
+        // 脳の区分は、合図(startCue)・マイクを開く(openMic)のどのスナップショットよりも前に持つ(マイクが開いている間は必ず表記が出せるように)。
+        // 外へ出る区分(host 以外)には確認の印を払い出し、画面が表記を描き終えるまで openMic の関所が録音を始めない。brain なし(旧ホスト)と host は印なし(0)で、関所は何もしない
         brain = info.brain
-        // この脳が載ったスナップショットを、ここで 1 回出す(onConversation・startSse・startCue / openMic より前)。画面への配送は FIFO なので、
-        // 表記はマイク使用中のスナップショットより先に届く。旧ホスト(brain なし)は内容が変わらず、重複として出ない
+        brainAckToken = if (info.brain != null && info.brain.egress != BrainEgress.HOST) nextBrainAckToken() else 0
+        brainAckDrawn = false
+        // この脳(と印)が載ったスナップショットを、ここで 1 回出す(onConversation・startSse・startCue / openMic より前)。
+        // 画面へ届くのは遅れうる(main の遅れに上限は無い)ので、描かれたことは関所が確認で確かめる。旧ホスト(brain なし)は内容が変わらず、重複として出ない
         emit()
         if (_phase != VoicePhase.PREPARING || g != gen) return
         // ハンドルの持ち主は呼び出し側。startSse / openMic より前に渡す(openMic が取消で止まる場合でも、この通知は出ている)
@@ -519,6 +546,11 @@ class VoiceSession(
             cancelledToIdle()
             return
         }
+        // 関所(R15): 外へ出る脳のとき、画面が表記を描き終えた確認が届くまで録音を始めない(期限までに来なければ録音せずに終える)
+        if (brainAckToken != 0 && !brainAckDrawn) {
+            holdForBrainNotice(g)
+            return
+        }
         var failure: Pair<VoiceErrorCode, String>? = null
         try {
             // ロックの外で開始する(`AudioRecord` の作成が遅くても、メインスレッドの取消はこれを待たない)。
@@ -565,6 +597,36 @@ class VoiceSession(
             // 開始音を鳴らせなかった(利用者に録音の合図が届かない)まま録音を続けない。例外のメッセージは診断に載せない
             fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: start tone notify failed")
         }
+    }
+
+    /**
+     * 画面が「外へ出る」表記を描き終えた確認を待つ(関所)。期限までに来なければ、`audio.start()` を呼ばずに `mic_unavailable` で終える(閉じる側に倒す)。
+     * 待つ間の取消は、今までの取消([finish])で録音 0 回のまま終わる。
+     */
+    private fun holdForBrainNotice(g: Int) {
+        brainGateHolding = true
+        arm(Timer.BRAIN_NOTICE, VoiceLimits.BRAIN_NOTICE_DRAW_MS) {
+            brainGateHolding = false
+            fail(VoiceErrorCode.MIC_UNAVAILABLE, "mic: brain notice not drawn")
+        }
+    }
+
+    /**
+     * 画面が、この往復の「外へ出る」表記を描き終えた([DaidaiView] の `onDraw` が終わった)ことの確認。**どのスレッドから呼んでもよい**
+     * (`post` するだけ。メインスレッドは、セッションの状態に直接触らない)。`token` はスナップショットの [VoiceSnapshot.brainAck] で、今の往復のものだけを受ける
+     * (古い往復・別のセッションのものは捨てる)。関所が待っているときだけマイクを開く処理を進め、合図の最中に届いたものは覚えるだけ(マイクは合図が終わってから開く)。
+     */
+    fun brainNoticeDrawn(token: Int) {
+        scheduler.post { doBrainNoticeDrawn(token) }
+    }
+
+    private fun doBrainNoticeDrawn(token: Int) {
+        if (token == 0 || token != brainAckToken || _phase != VoicePhase.PREPARING) return
+        brainAckDrawn = true
+        if (!brainGateHolding) return
+        brainGateHolding = false
+        cancelTimer(Timer.BRAIN_NOTICE)
+        openMic(gen)
     }
 
     private fun onMicError(g: Int, code: VoiceErrorCode) {
@@ -922,6 +984,7 @@ class VoiceSession(
             state = displayState(), transcript = transcript, reply = reply, error = error,
             diagnostics = diagnostics, micActive = recordingNow(), noticePose = noticePose, active = _phase.isActive,
             cuePlaying = cuePlaying && _phase == VoicePhase.PREPARING, brain = brain, preparing = _phase == VoicePhase.PREPARING,
+            brainAck = brainAckToken,
         )
         if (snap == lastSnapshot) return
         lastSnapshot = snap
@@ -997,6 +1060,16 @@ class VoiceSession(
 
     companion object {
         const val DEFAULT_CLIENT_ID = "echo-show-5"
+
+        /** 確認の印の払い出し。プロセスで一意(新しい [VoiceSession] の印が、前のセッションの印と重ならない)。0 は「要らない」なので払い出さない */
+        private val brainAckTokens = AtomicInteger()
+
+        private fun nextBrainAckToken(): Int {
+            while (true) {
+                val t = brainAckTokens.incrementAndGet()
+                if (t != 0) return t
+            }
+        }
 
         /** 再接続しても無駄な失敗(`404`・`410`・`4xx`) */
         private val NO_RECONNECT = setOf(BridgeFailure.NOT_FOUND, BridgeFailure.EXPIRED, BridgeFailure.CLIENT_ERROR, BridgeFailure.ASR_UNAVAILABLE)

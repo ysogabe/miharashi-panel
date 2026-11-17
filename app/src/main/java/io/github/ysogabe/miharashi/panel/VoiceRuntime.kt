@@ -122,6 +122,12 @@ data class VoiceSnapshot(
      * 表示用の [state] は PREPARING を IDLE に畳むので、「作成の応答を受けてから録音が始まるまで」を [brain] とあわせて表記の対象にする(R15)。
      */
     val preparing: Boolean = false,
+    /**
+     * 「外へ出る」表記の描画の確認の印(段階 2b-2。R15)。脳が外へ出る区分(`egress != HOST`)の往復だけ 0 でない(往復ごとに新しい)。
+     * 画面([DaidaiView])が表記を描き終えたら、この印を [VoiceSession.brainNoticeDrawn] に返す。返るまで、[VoiceSession] は録音を始めない。
+     * 0 は確認が要らない(旧ホスト・`host`・作成前)。
+     */
+    val brainAck: Int = 0,
 ) {
     override fun toString() = "VoiceSnapshot(state=$state, transcript=${transcript.length}chars, reply=${reply.length}chars, " +
         "error=$error, mic=$micActive, active=$active, preparing=$preparing, brain=$brain)"

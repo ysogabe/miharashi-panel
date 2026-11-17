@@ -216,7 +216,16 @@ class DaidaiView(
         drawStatus(c, lay, s, p)
         drawReply(c, lay, s, p)
         drawBrainNotice(c, lay, s)
+        // 表記を描き終えた。ここで確認を返す(render / invalidate の時点ではない)。描いたのと同じ状態 [s] の印を返す。案内の表示(上の early return)や表記なしの描画では返さない
+        if (s.brainNotice != null && s.brainAck != 0) onBrainNoticeDrawn?.invoke(s.brainAck)
     }
+
+    /**
+     * 「外へ出る」表記([DaidaiUiState.brainNotice])を、`onDraw` で描き終えた(段階 2b-2。R15)。引数は描いた状態の [DaidaiUiState.brainAck]。
+     * 描くたびに呼ぶ(重複はセッションが捨てる)。呼び出しは UI スレッドで、受け取り側は post するだけにする。保証の境目は `onDraw` の完了までで、
+     * 画面の合成・表示(パネルへの出力)の遅れは含まない。
+     */
+    var onBrainNoticeDrawn: ((Int) -> Unit)? = null
 
     private fun avatarColors() = AvatarColors(
         face = PanelView.ACCENT, feature = contrastColor(PanelView.BASE_BG, Color.BLACK), mark = WARN, contrast = contrastStrength)

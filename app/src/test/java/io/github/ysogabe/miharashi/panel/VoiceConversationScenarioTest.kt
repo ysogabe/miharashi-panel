@@ -378,6 +378,7 @@ class VoiceConversationScenarioTest {
         override fun start(request: TurnRequest) = session.start(request)
         override fun retry(request: TurnRequest) = session.retry(request)
         override fun endConversation(handle: String) = quietly { dob.endConversation(handle) }
+        override fun brainNoticeDrawn(token: Int) = session.brainNoticeDrawn(token)
         override fun cancel() = session.cancel()
         override fun stopMicNow() = session.stopMicNow()
         override fun close() {
@@ -422,7 +423,8 @@ class VoiceConversationScenarioTest {
             voice = DaidaiVoice(
                 pages, controller.policy, { settings },
                 VoiceRuntimeFactory { s, l -> ScenarioRuntime(s, l, this) },
-                sim, { states += it.voice; uis += it },
+                // 画面の偽: Robolectric は onDraw を回さないので、表記を描くはずの状態を受けたら、描き終えた確認を返す(DaidaiView と同じ条件)
+                sim, { states += it.voice; uis += it; it.drawnBrainAck().let { ack -> if (ack != 0) voice.onBrainNoticeDrawn(ack) } },
                 object : StartSound {
                     override fun play() { tones++ }
                     override fun playFollow() { followTones++ }

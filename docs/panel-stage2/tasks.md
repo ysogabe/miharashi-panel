@@ -50,4 +50,5 @@
 
 | ID | 内容 | 状態 | メモ |
 |---|---|---|---|
+| 2b-2(レビュー対応 2) | マイクを開く関所(`VoiceSession.openMic`)で、外へ出る区分(`egress != HOST`)のとき、`DaidaiView.onDraw` が表記を描き終えた確認(`brainAck` の印)を待つ。期限(`VoiceLimits.BRAIN_NOTICE_DRAW_MS` = 1.5 秒)までに来なければ録音せず `mic_unavailable`。`host` と旧ホストは経路を変えない。Robolectric は `onDraw` を自動では回さないので、通しの試験は画面の偽が確認を返す | 完了(push 済み) | 保証の境目は `onDraw` の完了まで(画面の合成・表示の遅れは含まない) |
 | 2b-2 | 申告(`BridgeClient.CLIENT_CAPABILITIES`)、201 の `brain` の読み取り(`BrainInfo`。無い・辞書でない = 旧ホストは null、`egress` が不明なら UNKNOWN、`name` は `daidai` だけ既知)、`VoiceSession` が 201 の時点で往復ごとに脳を持ち `VoiceSnapshot.brain` → `DaidaiUiState.brain` へ、表記(`DaidaiText.brainNotice`、返答の領域の最下段に `DaidaiView` が描く)、`daidai_unavailable` の通しの試験、文書 | 完了(push 済み) | `daidai_unavailable` は既存の ERROR の経路のままで足りた(コードの変更なし。試験で固定)。残件: 実機での見え方と、ホストの実物との結合(2b-3 の配備のあと) |
