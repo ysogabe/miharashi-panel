@@ -112,9 +112,14 @@ data class VoiceSnapshot(
     val active: Boolean = false,
     /** 開始の合図(挨拶・チャイム)を鳴らしている(段 G。アバターを talking にする。マイクはまだ閉じている) */
     val cuePlaying: Boolean = false,
+    /**
+     * このセッション(往復)の脳(201 の `brain`。段階 2b-2)。画面の「外へ出る」表記([DaidaiText.brainNotice])の元。作成の応答を受けてから、
+     * 合図・マイクを開くより前のスナップショットから載る。旧ホストや作成前・作成失敗では null。往復ごとに決め、持ち越さない。
+     */
+    val brain: BrainInfo? = null,
 ) {
     override fun toString() = "VoiceSnapshot(state=$state, transcript=${transcript.length}chars, reply=${reply.length}chars, " +
-        "error=$error, mic=$micActive, active=$active)"
+        "error=$error, mic=$micActive, active=$active, brain=$brain)"
 }
 
 /** [VoiceSession] の通知。**セッションのスレッドで呼ばれる**ので、UI への反映は呼び出し側が main へ post する。 */

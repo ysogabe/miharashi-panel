@@ -111,6 +111,23 @@ class DaidaiVoiceGreetingSessionTest {
         assertArrayEquals("同じ夜の 2 回目は「何かご用ですか?」", plain, r.player.lastWav)
     }
 
+    @Test fun theNoticeOfAnExternalBrainIsOnScreenFromTheGreetingThroughTheOpenMic() {
+        // 段階 2b-2(R15): 挨拶の再生中からマイクが開いている間じゅう、画面に「どこへ送るか」が出る。表記の無いまま音を拾う画面は 1 つも出ない
+        val r = Rigged(mapOf("g_evening_swipe" to wav(2_120), "g_plain_swipe" to wav(1_480)))
+        r.bridge.createReply = { n -> ok(SessionInfo("s-$n", r.bridge.hostLimits, brain = BrainInfo(BrainName.DAIDAI, BrainEgress.CLOUD))) }
+        r.enter()
+        assertTrue(r.ui.cuePlaying)
+        assertEquals("挨拶の再生中", "だいだい(クラウド)に送ります", r.ui.brainNotice)
+        r.player.finish(true)
+        r.sim.settle()
+        r.sim.advance(VoiceLimits.CUE_ECHO_WAIT_MS)
+        assertTrue(r.ui.micActive)
+        assertEquals("マイクが開いたあと", "だいだい(クラウド)に送ります", r.ui.brainNotice)
+        for (u in r.rendered.filter { it.micActive || it.cuePlaying }) assertEquals("$u", "だいだい(クラウド)に送ります", u.brainNotice)
+        r.leave()
+        assertEquals("離れたあとは、前の脳の表記を残さない", null, r.ui.brain)
+    }
+
     @Test fun withoutAGreetingTheChimePlaysInTheSameOrder() {
         val r = Rigged(emptyMap())
         r.enter()

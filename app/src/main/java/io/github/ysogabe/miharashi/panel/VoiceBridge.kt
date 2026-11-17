@@ -32,8 +32,10 @@ data class SessionInfo(
     val sessionId: String,
     val limits: HostLimits = HostLimits(),
     val conversation: ConversationInfo? = null,
+    /** 応答に辞書の `brain` があるときだけ(旧ホストは null。表示を出さない)。生の文字列は持たない([BrainInfo]) */
+    val brain: BrainInfo? = null,
 ) {
-    override fun toString() = "SessionInfo(idLen=${sessionId.length}, limits=$limits, conversation=$conversation)"
+    override fun toString() = "SessionInfo(idLen=${sessionId.length}, limits=$limits, conversation=$conversation, brain=$brain)"
 }
 
 /** チャンクの応答の `state`。 */

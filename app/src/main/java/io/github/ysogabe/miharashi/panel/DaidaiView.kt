@@ -215,6 +215,7 @@ class DaidaiView(
         lay.card?.let { drawCard(c, lay, it, s, p) }
         drawStatus(c, lay, s, p)
         drawReply(c, lay, s, p)
+        drawBrainNotice(c, lay, s)
     }
 
     private fun avatarColors() = AvatarColors(
@@ -326,6 +327,19 @@ class DaidaiView(
             val size = lay.px(32f)
             text(c, DaidaiText.HINT, box.left, box.top + lay.px(8f) + size, size, MUTED, bold)
         }
+    }
+
+    /**
+     * マイクが開いている間と合図の再生中の、どこへ送るかの表記(R15)。1 行で、収まらなければ省略。外へ出る(出るかもしれない)ときは警告色、
+     * ホストの中だけのときは控えめな色。文言は固定で、ホストの文字列は使わない。
+     */
+    private fun drawBrainNotice(c: Canvas, lay: DaidaiLayout, s: DaidaiUiState) {
+        val notice = s.brainNotice ?: return
+        val box = lay.brainNotice
+        val size = lay.px(DaidaiLayout.BRAIN_NOTICE_SIZE)
+        regular.textSize = size
+        val line = TextFitter.ellipsize(notice, box.width) { regular.measureText(it) }
+        text(c, line, box.left, box.centerY + size * 0.35f, size, if (s.brain?.staysOnHost == true) MUTED else WARN, regular)
     }
 
     /** 返答の下に出す小さな失敗理由(1 行。収まらなければ省略)。吹き出しではなく、状態の色(警告色)の文字 */

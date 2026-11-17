@@ -124,6 +124,9 @@ class VoiceSession(
     private var error: VoiceErrorCode? = null
     private var diagnostics: String? = null
     private var noticePose: String? = null
+
+    /** このセッション(往復)の脳(201 の `brain`)。往復ごとに決め、新しいセッションの作成前・作成失敗・取消では null(前の往復の値を持ち越さない) */
+    private var brain: BrainInfo? = null
     private var lastSnapshot: VoiceSnapshot? = null
 
     // ---- 開始の合図(段 G)
@@ -316,6 +319,7 @@ class VoiceSession(
         error = null
         diagnostics = null
         noticePose = null
+        brain = null
     }
 
     /**
@@ -416,6 +420,8 @@ class VoiceSession(
         }
         sessionId = info.sessionId
         limits = EffectiveLimits.resolve(info.limits)
+        // 脳の区分は、合図(startCue)・マイクを開く(openMic)のどのスナップショットよりも前に持つ(マイクが開いている間は必ず表記が出せるように)
+        brain = info.brain
         // ハンドルの持ち主は呼び出し側。startSse / openMic より前に渡す(openMic が取消で止まる場合でも、この通知は出ている)
         info.conversation?.let { c -> safe { listener.onConversation(tag, c) } }
         startSse()
@@ -911,7 +917,7 @@ class VoiceSession(
         val snap = VoiceSnapshot(
             state = displayState(), transcript = transcript, reply = reply, error = error,
             diagnostics = diagnostics, micActive = recordingNow(), noticePose = noticePose, active = _phase.isActive,
-            cuePlaying = cuePlaying && _phase == VoicePhase.PREPARING,
+            cuePlaying = cuePlaying && _phase == VoicePhase.PREPARING, brain = brain,
         )
         if (snap == lastSnapshot) return
         lastSnapshot = snap

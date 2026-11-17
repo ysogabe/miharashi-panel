@@ -36,6 +36,12 @@ class DaidaiLayout(val width: Float, val height: Float, val hasCard: Boolean) {
     /** 返答・エラーの吹き出し・「話しかけてください」を置く場所 */
     val reply = box(RIGHT_L, statusTop + 56f, RIGHT_R, CONTENT_BOTTOM)
 
+    /**
+     * マイクが開いている間の「どこへ送るか」の表記(R15。段階 2b-2)。返答の領域の最下段の 1 行。この間は返答が空なので、重ならない
+     * (返答のある状態では出さない)。ページ点の帯([dotsArea])には入れない。
+     */
+    val brainNotice = box(RIGHT_L, CONTENT_BOTTOM - BRAIN_NOTICE_H, RIGHT_R, CONTENT_BOTTOM)
+
     /** 未設定・権限なしの案内。右の列全体 */
     val guide = box(RIGHT_L, 72f, RIGHT_R, CONTENT_BOTTOM)
 
@@ -52,6 +58,10 @@ class DaidaiLayout(val width: Float, val height: Float, val hasCard: Boolean) {
         private const val RIGHT_L = 328f
         private const val RIGHT_R = 936f
         private const val CONTENT_BOTTOM = 440f
+
+        /** 「どこへ送るか」の表記の高さと文字の大きさ(基準値) */
+        const val BRAIN_NOTICE_H = 32f
+        const val BRAIN_NOTICE_SIZE = 20f
 
         /** 返答の最大行数(長いときは縮小→省略で収める) */
         const val REPLY_MAX_LINES = 4

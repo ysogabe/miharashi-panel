@@ -4,6 +4,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -1109,13 +1110,100 @@ class BridgeClientTest {
         assertFalse(body.contains("conversation"))
         // 今までと同じバイト列(org.json の並びは実装の定める順。今までの作り方を同じ実装でもう一度組んで比べる)
         val legacy = JSONObject()
-            .put("client", JSONObject().put("id", "echo-show-5").put("app_version", "0.3.0"))
+            .put("client", JSONObject().put("id", "echo-show-5").put("app_version", "0.3.0").put("capabilities", JSONArray().put("brain_notice")))
             .put("reason", "swipe")
             .put("notice_id", JSONObject.NULL)
             .put("audio", JSONObject().put("encoding", "pcm_s16le").put("sample_rate", 16_000).put("channels", 1))
             .put("limits", JSONObject().put("no_speech_s", 10L).put("max_utterance_s", 30L))
             .toString()
         assertEquals(legacy, body)
+    }
+
+    // ---- 段階 2b-2: capabilities の申告と brain の読み取り
+
+    @Test fun createDeclaresBrainNoticeAsAStringArrayInEveryKindOfCreate() {
+        val bodies = listOf(
+            request, // 会話を持たない旧来の呼び方
+            request.copy(reason = StartReason.NOTIFICATION, noticeId = "n-1"),
+            request.copy(conversation = ConversationParam()), // 最初の往復
+            request.copy(conversation = ConversationParam(handle), noSpeechS = 6), // 続きの往復
+        ).map { createBody(it) }
+        for (b in bodies) {
+            val caps = JSONObject(b).getJSONObject("client").getJSONArray("capabilities")
+            assertEquals(1, caps.length())
+            assertEquals("文字列", "brain_notice", caps.get(0))
+            assertEquals("client には id・app_version・capabilities だけ", 3, JSONObject(b).getJSONObject("client").length())
+        }
+    }
+
+    @Test fun createDeclaresBrainNoticeOnARetryTooAndKeepsItInTheBytes() {
+        // 再試行(VoiceSession が新しい作成を出す)も同じ経路。バイト列はどの作成でも同じ client を持つ
+        val a = createBody(request.copy(conversation = ConversationParam()))
+        val b = createBody(request.copy(conversation = ConversationParam()))
+        assertEquals(a, b)
+        assertTrue(a.contains(""""capabilities":["brain_notice"]"""))
+    }
+
+    @Test fun createReadsAKnownBrain() {
+        assertEquals(
+            BrainInfo(BrainName.DAIDAI, BrainEgress.CLOUD),
+            createInfo("""{"session_id":"$sid","brain":{"name":"daidai","egress":"cloud"}}""").brain,
+        )
+        assertEquals(
+            BrainInfo(BrainName.OTHER, BrainEgress.HOST),
+            createInfo("""{"session_id":"$sid","brain":{"name":"llm-vl","egress":"host"}}""").brain,
+        )
+        assertEquals(BrainEgress.LAN, createInfo("""{"session_id":"$sid","brain":{"name":"x","egress":"lan"}}""").brain!!.egress)
+    }
+
+    @Test fun anAbsentOrNonObjectBrainIsNullMeaningAnOldHost() {
+        assertNull(createInfo("""{"session_id":"$sid"}""").brain)
+        assertNull(createInfo("""{"session_id":"$sid","brain":null}""").brain)
+        assertNull(createInfo("""{"session_id":"$sid","brain":"daidai"}""").brain)
+        assertNull(createInfo("""{"session_id":"$sid","brain":["daidai","cloud"]}""").brain)
+        assertNull(createInfo("""{"session_id":"$sid","brain":true}""").brain)
+        assertNull(createInfo("""{"session_id":"$sid","brain":7}""").brain)
+    }
+
+    @Test fun aBrainObjectWithABrokenEgressIsUnknownNotHost() {
+        fun egress(literal: String?): BrainEgress? {
+            val e = if (literal == null) "" else ""","egress":$literal"""
+            return createInfo("""{"session_id":"$sid","brain":{"name":"daidai"$e}}""").brain?.egress
+        }
+        assertEquals(BrainEgress.HOST, egress("\"host\""))
+        assertEquals("省略", BrainEgress.UNKNOWN, egress(null))
+        assertEquals("null", BrainEgress.UNKNOWN, egress("null"))
+        assertEquals("未知の値", BrainEgress.UNKNOWN, egress("\"wan\""))
+        assertEquals("大文字", BrainEgress.UNKNOWN, egress("\"HOST\""))
+        assertEquals("空白つき", BrainEgress.UNKNOWN, egress("\"host \""))
+        assertEquals("空", BrainEgress.UNKNOWN, egress("\"\""))
+        assertEquals("数値", BrainEgress.UNKNOWN, egress("0"))
+        assertEquals("真偽値", BrainEgress.UNKNOWN, egress("false"))
+        assertEquals("配列", BrainEgress.UNKNOWN, egress("[\"host\"]"))
+        assertEquals("オブジェクト", BrainEgress.UNKNOWN, egress("""{"v":"host"}"""))
+        assertEquals("空の辞書でも辞書。外へ出る側", BrainEgress.UNKNOWN, createInfo("""{"session_id":"$sid","brain":{}}""").brain?.egress)
+    }
+
+    @Test fun onlyTheExactNameDaidaiIsKnown() {
+        fun name(literal: String) = createInfo("""{"session_id":"$sid","brain":{"name":$literal,"egress":"cloud"}}""").brain!!.name
+        assertEquals(BrainName.DAIDAI, name("\"daidai\""))
+        assertEquals(BrainName.OTHER, name("\"Daidai\""))
+        assertEquals(BrainName.OTHER, name("\"daidai \""))
+        assertEquals(BrainName.OTHER, name("\"llm-vl\""))
+        assertEquals(BrainName.OTHER, name("null"))
+        assertEquals(BrainName.OTHER, name("1"))
+        assertEquals(BrainName.OTHER, name("[\"daidai\"]"))
+        assertEquals("名前が無くても区分は読む", BrainEgress.CLOUD, createInfo("""{"session_id":"$sid","brain":{"egress":"cloud"}}""").brain!!.egress)
+    }
+
+    @Test fun brainToStringNeverCarriesTheRawValues() {
+        val canary = "CANARY-Z9-secret-brain-name"
+        val info = createInfo("""{"session_id":"$sid","brain":{"name":"$canary","egress":"$canary"}}""")
+        assertEquals(BrainInfo(BrainName.OTHER, BrainEgress.UNKNOWN), info.brain)
+        assertFalse(info.brain.toString().contains(canary))
+        assertFalse(info.toString().contains(canary))
+        assertEquals("BrainInfo(name=OTHER, egress=UNKNOWN)", info.brain.toString())
+        assertFalse(createInfo("""{"session_id":"$sid","brain":{"name":"daidai","egress":"cloud"}}""").toString().contains("daidai"))
     }
 
     @Test fun createSendsAnEmptyConversationObjectForANewConversation() {

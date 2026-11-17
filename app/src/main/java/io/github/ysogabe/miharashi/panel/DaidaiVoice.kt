@@ -208,6 +208,7 @@ class DaidaiVoice(
             else baseUi.copy(
                 voice = s.state, transcript = s.transcript, reply = s.reply, error = s.error, diagnostics = s.diagnostics,
                 micActive = s.micActive, noticePose = s.noticePose ?: baseUi.noticePose, cuePlaying = s.cuePlaying,
+                brain = s.brain,
             ),
         )
     }

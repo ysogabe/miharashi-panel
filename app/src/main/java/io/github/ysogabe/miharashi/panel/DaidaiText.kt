@@ -44,6 +44,18 @@ object DaidaiText {
         VoiceState.ERROR -> DaidaiPose.IDLE
     }
 
+    /**
+     * 脳の区分に応じた、マイクが開いている間の表記(R15。段階 2b-2)。脳が分からない(null。旧ホスト)ときは null で、何も出さない。
+     * ホストの文字列は使わない。名前は既知のもの(だいだい)だけ。区分が分からない([BrainEgress.UNKNOWN])ときは「外へ出る」側に倒す。
+     */
+    fun brainNotice(brain: BrainInfo?): String? = when (brain?.egress) {
+        null -> null
+        BrainEgress.HOST -> "このホストで答えます(外へは送りません)"
+        BrainEgress.LAN -> "LAN の別の機械に送ります"
+        BrainEgress.CLOUD -> if (brain.name == BrainName.DAIDAI) "だいだい(クラウド)に送ります" else "クラウドに送ります"
+        BrainEgress.UNKNOWN -> "外へ送られる場合があります"
+    }
+
     private val ERROR_MESSAGES: Map<VoiceErrorCode, String> = mapOf(
         VoiceErrorCode.NOT_CONFIGURED to "ブリッジが未設定です。設定で接続先とトークンを入れてください",
         VoiceErrorCode.MIC_PERMISSION to "マイクの権限がありません。adb で権限を許可してください",

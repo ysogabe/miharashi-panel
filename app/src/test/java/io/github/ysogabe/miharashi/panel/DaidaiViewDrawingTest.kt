@@ -74,6 +74,63 @@ class DaidaiViewDrawingTest {
         for (y in 60 until 480) for (x in 0 until 960) assertEquals("($x,$y)", off[y * 960 + x], on[y * 960 + x])
     }
 
+    // ---- 段階 2b-2: 「どこへ送るか」の表記(返答の領域の最下段。960×480 では x 328..936, y 408..440)
+
+    private fun inNotice(x: Int, y: Int) = x in 328 until 936 && y in 408 until 440
+    private fun noticeArea(px: IntArray) = (408 until 440).flatMap { y -> (328 until 936).map { x -> px[y * 960 + x] } }
+    private fun outsideNotice(px: IntArray) = px.indices.filter { !inNotice(it % 960, it / 960) }
+    private val cloudDaidai = BrainInfo(BrainName.DAIDAI, BrainEgress.CLOUD)
+
+    @Test fun theBrainNoticeIsDrawnOnlyInItsOwnBandWhileListening() {
+        val without = draw(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true))
+        val with = draw(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, brain = cloudDaidai))
+        assertTrue("表記の帯に文字が出る", noticeArea(without).indices.count { noticeArea(without)[it] != noticeArea(with)[it] } > 100)
+        for (i in outsideNotice(without)) assertEquals("帯の外は変わらない(${i % 960},${i / 960})", without[i], with[i])
+        // 旧ホスト(脳なし)は今の見た目のまま
+        assertArrayEquals(without, draw(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, brain = null)))
+    }
+
+    @Test fun theBrainNoticeIsDrawnForHearingAndForTheCueWithTheMicStillClosed() {
+        val hearing = DaidaiUiState(voice = VoiceState.HEARING, micActive = true, transcript = "今日の天気は")
+        assertTrue(diff(draw(hearing), draw(hearing.copy(brain = cloudDaidai))) > 100)
+        val cue = DaidaiUiState(voice = VoiceState.IDLE, cuePlaying = true)
+        val a = noticeArea(draw(cue))
+        val b = noticeArea(draw(cue.copy(brain = cloudDaidai)))
+        assertTrue("合図の再生中も表記が出る", a.indices.count { a[it] != b[it] } > 100)
+    }
+
+    @Test fun theBrainNoticeIsNotDrawnWhenTheMicIsClosed() {
+        for (s in listOf(VoiceState.IDLE, VoiceState.WAITING, VoiceState.REPLYING, VoiceState.ERROR)) {
+            val base = DaidaiUiState(voice = s, reply = if (s == VoiceState.REPLYING) "今日は晴れでしょう" else "", error = if (s == VoiceState.ERROR) VoiceErrorCode.DAIDAI_UNAVAILABLE else null)
+            assertArrayEquals("$s", draw(base), draw(base.copy(brain = cloudDaidai)))
+        }
+    }
+
+    @Test fun everyKindOfBrainDrawsAndTheKindsLookDifferent() {
+        val kinds = listOf(
+            BrainInfo(BrainName.DAIDAI, BrainEgress.CLOUD), BrainInfo(BrainName.OTHER, BrainEgress.CLOUD), BrainInfo(BrainName.OTHER, BrainEgress.LAN),
+            BrainInfo(BrainName.OTHER, BrainEgress.UNKNOWN), BrainInfo(BrainName.OTHER, BrainEgress.HOST),
+        )
+        val pics = kinds.map { noticeArea(draw(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, brain = it))) }
+        for (i in pics.indices) for (j in i + 1 until pics.size) {
+            assertTrue("$i vs $j", pics[i].indices.count { pics[i][it] != pics[j][it] } > 50)
+        }
+    }
+
+    @Test fun theNoticeStaysInsideItsBandOnASmallerScreenAndWithTheCard() {
+        // 通知カードがあっても、小さい画面でも、表記は返答の領域の最下段に収まる(はみ出して他を壊さない)
+        val v = newView(480, 240)
+        v.render(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, notice = notice, brain = cloudDaidai))
+        val px = pixels(v, 480, 240)
+        val v2 = newView(480, 240)
+        v2.render(DaidaiUiState(voice = VoiceState.LISTENING, micActive = true, notice = notice))
+        val px2 = pixels(v2, 480, 240)
+        val changed = px.indices.filter { px[it] != px2[it] }
+        assertTrue(changed.isNotEmpty())
+        // 基準の 408..440 が半分の大きさ(204..220)に縮む。その外には 1 ピクセルも出さない
+        for (i in changed) assertTrue("(${i % 480},${i / 480})", i / 480 in 200..222 && i % 480 in 160..470)
+    }
+
     @Test fun contrastStrengthChangesColors() {
         for ((name, s) in states) {
             val dim = draw(s, 0f)
