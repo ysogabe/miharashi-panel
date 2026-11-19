@@ -32,7 +32,7 @@
         <div class="note-item"><span class="note-index">01</span><div><strong>何のボタンか、ひと目でわかる</strong><p>アイコンと説明文で案内します。表示中の画面に合わせて、ボタンの説明も変わります。</p></div></div>
         <div class="note-item"><span class="note-index">02</span><div><strong>モニターの消灯・点灯</strong><p>Home Assistant と連動し、点灯・消灯・自動を切り替えられます。</p></div></div>
         <div class="note-item"><span class="note-index">03</span><div><strong>好きな画面で固定</strong><p>現在の画面をタップすると自動巡回を停止し、もう一度タップすると再開します。</p></div></div>
-        <div class="note-item"><span class="note-index">04</span><div><strong>声で話せる</strong><p>通知が来ると、条件を満たしたときに音声の画面へ切り替わります。条件を満たすと、挨拶のあとにマイクも開きます。画面を横にスワイプして入っても話せます。</p></div></div>
+        <div class="note-item"><span class="note-index">04</span><div><strong>声で話せる</strong><p>通知が来ると、条件を満たしたときに音声の画面へ切り替わります。切り替わったあと、さらに条件を満たすと、挨拶のあとにマイクも開きます。画面を横にスワイプして入っても話せます。</p></div></div>
         <p class="note-disclaimer">表示中の画面や巡回の状態は、Miharashi 本体から取得して表示します。</p>
       </aside>
     </section>
@@ -68,12 +68,12 @@
     </section>
 
     <section class="shell section-block" id="voice" aria-labelledby="voice-title">
-      <div class="section-heading"><div><p class="eyebrow">02 / Voice</p><h2 id="voice-title">ボタンを押さずに、<br class="mobile-only">声で話しかける。</h2></div><p class="section-aside">通知で画面が切り替わり、<br>条件を満たすと挨拶のあとにマイクが開きます。</p></div>
+      <div class="section-heading"><div><p class="eyebrow">02 / Voice</p><h2 id="voice-title">ボタンを押さずに、<br class="mobile-only">声で話しかける。</h2></div><p class="section-aside">条件を満たすと通知で画面が切り替わり、<br>さらに条件を満たすと挨拶のあとにマイクが開きます。</p></div>
       <div class="feature-grid shot-main">
-        <article class="feature"><span class="micro-label">NOTICE</span><h3>通知が来たら、音声の画面へ</h3><p>通知が来ると、設定で有効にしていれば、画面が自動で音声の画面に切り替わります。部屋が暗い状態が続いているときは、自動の切り替えを見送ります。マイクを自動で開くのは、これとは別の条件です。自動で聞き取る設定が有効で、回数と間隔の歯止めを通ったときに限り、挨拶の声のあとにマイクが開きます。歯止めにかかったときは画面だけが切り替わり、通知を見るだけになります。</p></article>
+        <article class="feature"><span class="micro-label">NOTICE</span><h3>通知が来たら、音声の画面へ</h3><p>通知が来ると、設定で有効にしていれば、画面が自動で音声の画面に切り替わります。部屋が暗い状態が続いているときは、切り替えを見送ります。切り替えたあとにマイクが開くかどうかは、別の条件で決まります。自動で聞き取る設定が有効で、歯止めにかからなかったときだけ、挨拶の声のあとにマイクが開きます。歯止めには回数と間隔の上限があり、直前に自動で聞き取ったのに誰も話さなかったときなど、ほかにも見送る場合があります。見送ったときは画面だけが切り替わり、通知を見るだけになります。</p></article>
         <article class="feature"><span class="micro-label">SWIPE</span><h3>スワイプで入っても話せる</h3><p>画面を横にスワイプして音声の画面に入っても、会話を始められます。挨拶のあとにマイクが開きます。</p></article>
-        <article class="feature"><span class="micro-label">TURNS</span><h3>続けて話せる</h3><p>会話は最大 5 往復です。5 分は次の往復を始められる期限で、話している最中の往復は切りません。返答を最後まで再生でき、続けられるときに短い音が鳴るので、そのまま続けて話せます。</p></article>
-        <article class="feature"><span class="micro-label">HOME SERVER</span><h3>音声の処理は自宅サーバーで</h3><p>発話区間の検出、音声認識、音声合成は、すべて自宅サーバーで行います。録音した音声は、どちらの会話でも自宅サーバーの外へ出ません。</p></article>
+        <article class="feature"><span class="micro-label">TURNS</span><h3>続けて話せる</h3><p>会話は最大 5 往復です。最初の往復が始まってから 5 分が、次の往復を始められる期限で、話している最中の往復は切りません。返答を最後まで再生でき、続けられるときに短い音が鳴るので、そのまま続けて話せます。</p></article>
+        <article class="feature"><span class="micro-label">HOME SERVER</span><h3>音声の処理は自宅サーバーで</h3><p>発話区間の検出、音声認識、音声合成は、すべて自宅サーバーで行います。録音した音声は、どちらの会話でも自宅サーバーの外へ出ません。通知から始まった会話では、聞き取った発言のテキストも自宅サーバーの中で扱います。</p></article>
         <article class="feature"><span class="micro-label">DESTINATION</span><h3>送り先を画面の右下に</h3><p>マイクが開いている間、送り先を画面の右下に 1 行で表示します。クラウドへ送るときに送るのは、聞き取った発言と直近のやり取りのテキストだけです。自宅サーバーで答えるときは、クラウドへ何も送りません。外へ出る会話では、この表示を描き終えてから録音を始めます。</p></article>
         <article class="feature"><span class="micro-label">VOICE</span><h3>返答の声は固定</h3><p>返答の声は、参照音声を元にした声に固定しています。候補を聞き比べて選び、実際の運用に適用しました。</p></article>
       </div>
@@ -144,15 +144,15 @@
     </section>
 
     <section class="shell scope-section" id="phases" aria-labelledby="phases-title">
-      <div class="section-heading"><div><p class="eyebrow">05 / Phases</p><h2 id="phases-title">声の会話まで、<br class="mobile-only">実機で動いています。</h2></div><p class="section-aside">v0.2.0 を実機で使用中。<br>音声の会話もこの版で動いています。</p></div>
+      <div class="section-heading"><div><p class="eyebrow">05 / Phases</p><h2 id="phases-title">声の会話まで、<br class="mobile-only">実機で動いています。</h2></div><p class="section-aside">実機では最新のビルドを使用中(バージョン表記は v0.2.0 のまま)。<br>音声の会話もこのビルドで動いています。</p></div>
       <ol class="roadmap panel-roadmap four">
         <li class="done"><span class="roadmap-step">P0</span><div><span class="roadmap-state">完了</span><h3>設計と LP</h3><p>接続方式の比較、API 案、パネル画面案、単体アプリの振る舞い。</p></div></li>
         <li class="done"><span class="roadmap-step">P1</span><div><span class="roadmap-state">完了</span><h3>panel API(既定 OFF)</h3><p>キーの注入、/status、SSE、トークン、レート制限。LAN の別の端末から curl で確認。</p></div></li>
         <li class="done"><span class="roadmap-step">P2</span><div><span class="roadmap-state">完了</span><h3>単体アプリ</h3><p>画面の切り替え、現在の画面の表示、自動起動。モニターの操作と操作盤の待機時計にも対応。</p></div></li>
         <li class="done"><span class="roadmap-step">✓</span><div><span class="roadmap-state">対応済み</span><h3>画面選択と自動巡回</h3><p>項目移動、メニューからの画面選択、画面に応じたボタンの説明、巡回の固定・再開。</p></div></li>
         <li class="done"><span class="roadmap-step">✓</span><div><span class="roadmap-state">完了</span><h3>音声の会話</h3><p>スワイプで入って話せる。返答はクラウドの AI エージェント「Muse」が作り、クラウドへ送るのは聞き取った発言と直近のやり取りのテキストだけ。音声の処理は自宅サーバーで行い、録音した音声は自宅サーバーの外へ出ない。送り先を画面の右下に表示。</p></div></li>
-        <li class="done"><span class="roadmap-step">✓</span><div><span class="roadmap-state">完了</span><h3>通知との連動</h3><p>通知で音声の画面に切り替わる。条件を満たすと挨拶のあとにマイクが開き、回数と間隔の歯止めにかかると画面だけが切り替わる。返答は自宅サーバー上の AI が作り、クラウドへは送らない。</p></div></li>
-        <li class="done"><span class="roadmap-step">✓</span><div><span class="roadmap-state">完了</span><h3>複数往復と声の固定</h3><p>最大 5 往復まで続けて話せる。5 分は次の往復を始められる期限。返答の声は、参照音声を元にした声に固定。</p></div></li>
+        <li class="done"><span class="roadmap-step">✓</span><div><span class="roadmap-state">完了</span><h3>通知との連動</h3><p>条件を満たすと通知で音声の画面に切り替わる。切り替えたあと、さらに条件を満たすと挨拶のあとにマイクが開き、歯止めにかかると画面だけが切り替わる。返答は自宅サーバー上の AI が作り、クラウドへは送らない。</p></div></li>
+        <li class="done"><span class="roadmap-step">✓</span><div><span class="roadmap-state">完了</span><h3>複数往復と声の固定</h3><p>最大 5 往復まで続けて話せる。最初の往復が始まってから 5 分が、次の往復を始められる期限。返答の声は、参照音声を元にした声に固定。</p></div></li>
         <li class="current"><span class="roadmap-step">→</span><div><span class="roadmap-state">未検証・これから</span><h3>確認と接続</h3><p>・通知から始まった会話で、通知の内容を人が実際に声で聞いて確かめる最終確認(仕組みの確認は済み)<br>・エージェントへの接続が止まっているときの画面の表示の確認<br>・エージェント側からの通知を受け取る仕組み(受け口は完成済み。エージェントとの接続はこれから)</p></div></li>
       </ol>
       <p class="scope-note">夜間の時刻に応じた減光は作らず、触らなければバックライトを最小にして待機時計を表示します。</p>
@@ -164,8 +164,8 @@
       <details><summary>モニターの消灯は、キオスクの中だけで切り替えないのですか？</summary><p>キオスクの中だけでは切り替えません。キオスクが Home Assistant の設定項目(input_select)を書き換えます。こうすることで Home Assistant の画面とパネルの表示が一致し、再起動しても設定が保たれます。</p></details>
       <details><summary>キオスクに API を追加しても安全ですか？</summary><p>初期設定では無効で、有効にする場合も Bearer トークンと LAN 内の 1 つのインターフェースだけに制限されます。キー操作、画面選択、巡回とモニターの切り替え、状態の取得だけに用途を限定しており、任意のコマンドは実行しません。</p></details>
       <details><summary>声や通知の内容はクラウドへ送られますか？</summary><p>録音した音声は、どちらの会話でも自宅サーバーの外へ出ません。発話区間の検出、音声認識、音声合成は自宅サーバーで行います。返答を作る側は 2 通りです。スワイプで入った会話は、クラウドの AI エージェント「Muse」が返答を作ります。クラウドへ送るのは、聞き取った発言と直近のやり取りのテキストだけです。通知から始まった会話は、自宅サーバー上の AI が返答を作ります。通知のタイトルと本文を文脈に渡しますが、録音も、聞き取った発言のテキストも、通知のタイトルと本文も、自宅サーバーの中で扱い、クラウドへは送りません。マイクが開いている間は、画面の右下に送り先を表示します。</p></details>
-      <details><summary>話しかけるとき、ボタンを押しますか？</summary><p>押しません。画面を横にスワイプして音声の画面に入ると、挨拶のあとにマイクが開きます。通知が来たときは、設定で有効にしていれば、画面が自動で音声の画面に切り替わります。部屋が暗い状態が続いていると、自動の切り替えを見送ります。マイクを自動で開くのは、自動で聞き取る設定が有効で、回数と間隔の歯止めを通ったときだけです。そのときは挨拶のあとにマイクが開き、歯止めにかかったときは画面だけが切り替わって、通知を見るだけになります。</p></details>
-      <details><summary>会話はどこまで続けられますか？</summary><p>最大 5 往復までです。5 分は次の往復を始められる期限で、話している最中の往復は切りません。返答を最後まで再生でき、続けられるときに短い音が鳴るので、そのまま続けて話せます。通知から始まった会話なら、通知の内容について質問しても答えられます。</p></details>
+      <details><summary>話しかけるとき、ボタンを押しますか？</summary><p>押しません。画面を横にスワイプして音声の画面に入ると、挨拶のあとにマイクが開きます。通知が来たときは、設定で有効にしていれば、画面が自動で音声の画面に切り替わります。部屋が暗い状態が続いているときは、切り替えを見送ります。切り替えたあとにマイクが開くのは、自動で聞き取る設定が有効で、歯止めにかからなかったときだけです。歯止めには回数と間隔の上限があり、直前に自動で聞き取ったのに誰も話さなかったときなど、ほかにも見送る場合があります。かからなかったときは挨拶のあとにマイクが開き、見送ったときは画面だけが切り替わって、通知を見るだけになります。</p></details>
+      <details><summary>会話はどこまで続けられますか？</summary><p>最大 5 往復までです。最初の往復が始まってから 5 分が、次の往復を始められる期限で、話している最中の往復は切りません。返答を最後まで再生でき、続けられるときに短い音が鳴るので、そのまま続けて話せます。通知から始まった会話なら、通知の内容について質問しても答えられます。</p></details>
       <details><summary>Echo の Wi-Fi が切れたらどうなりますか？</summary><p>最後の更新から 5 秒を超えると STALE、15 秒を超えると OFFLINE と表示します。最後の状態を薄く残したまま、再接続を試み続けます。キオスク側の動作には影響しません。</p></details>
       <details><summary>Echo が再起動したらどうなりますか？</summary><p>端末の起動時に自動で前面に出て、/status を再取得します。再接続が完了すると、本体の現在の状態を表示します。</p></details>
       <details><summary>操作盤の画面が焼き付きませんか？</summary><p>操作盤に 3 分間触れなければバックライトを最小にして、位置と濃淡がゆっくり変化する待機時計を表示します。数字は分の境目でフリップします。この時間は設定で変更でき、0 に設定すれば待機時計を表示しません。最初のタッチは操作盤への復帰だけに使います。</p></details>
